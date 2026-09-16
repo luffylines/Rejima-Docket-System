@@ -113,7 +113,10 @@ on public.profiles for select
 to authenticated
 using ((select auth.uid()) = id);
 
--- Admin/manager/member can read all dockets. Viewers can only read active Internal dockets.
+-- Docket visibility by role:
+-- Admin/Manager: all dockets.
+-- Member: active Internal dockets + only their own archived Internal dockets.
+-- Viewer: active Internal dockets only.
 drop policy if exists "Active team can read dockets" on public.dockets;
 create policy "Active team can read dockets"
 on public.dockets for select
@@ -125,7 +128,18 @@ using (
     where p.id = (select auth.uid())
       and p.status = 'active'
       and (
-        p.role in ('admin','manager','member')
+        p.role in ('admin','manager')
+        or (
+          p.role = 'member'
+          and public.dockets.confidentiality = 'Internal'
+          and (
+            public.dockets.status = 'active'
+            or (
+              public.dockets.status = 'archived'
+              and public.dockets.uploaded_by = (select auth.uid())
+            )
+          )
+        )
         or (
           p.role = 'viewer'
           and public.dockets.status = 'active'
@@ -135,7 +149,9 @@ using (
   )
 );
 
--- Active non-viewers can create dockets only as themselves.
+-- Admin/Manager may create any classification.
+-- Member may create Internal dockets only.
+-- Viewer cannot create dockets.
 drop policy if exists "Active team can create dockets" on public.dockets;
 create policy "Active team can create dockets"
 on public.dockets for insert
@@ -143,44 +159,74 @@ to authenticated
 with check (
   uploaded_by = (select auth.uid())
   and exists (
-    select 1 from public.profiles p
-    where p.id = (select auth.uid()) and p.status = 'active' and p.role in ('admin','manager','member')
+    select 1
+    from public.profiles p
+    where p.id = (select auth.uid())
+      and p.status = 'active'
+      and (
+        p.role in ('admin','manager')
+        or (p.role = 'member' and public.dockets.confidentiality = 'Internal')
+      )
   )
 );
 
--- Active non-viewers can update docket metadata/status. Physical file deletion is separate.
+-- Admin/Manager may update any docket.
+-- Member may update only their own Internal docket and cannot move it to Recycle Bin.
+-- Viewer cannot update dockets.
 drop policy if exists "Active team can update dockets" on public.dockets;
 create policy "Active team can update dockets"
 on public.dockets for update
 to authenticated
 using (
   exists (
-    select 1 from public.profiles p
-    where p.id = (select auth.uid()) and p.status = 'active' and p.role in ('admin','manager','member')
+    select 1
+    from public.profiles p
+    where p.id = (select auth.uid())
+      and p.status = 'active'
+      and (
+        p.role in ('admin','manager')
+        or (
+          p.role = 'member'
+          and public.dockets.uploaded_by = (select auth.uid())
+          and public.dockets.confidentiality = 'Internal'
+        )
+      )
   )
 )
 with check (
   exists (
-    select 1 from public.profiles p
-    where p.id = (select auth.uid()) and p.status = 'active' and p.role in ('admin','manager','member')
+    select 1
+    from public.profiles p
+    where p.id = (select auth.uid())
+      and p.status = 'active'
+      and (
+        p.role in ('admin','manager')
+        or (
+          p.role = 'member'
+          and public.dockets.uploaded_by = (select auth.uid())
+          and public.dockets.confidentiality = 'Internal'
+          and public.dockets.status in ('active','archived')
+        )
+      )
   )
 );
 
--- Audit trail: viewer accounts do not get workspace-wide audit history.
+-- Only Admin/Manager can read workspace-wide audit history.
 drop policy if exists "Active team can read audit logs" on public.audit_logs;
 create policy "Active team can read audit logs"
 on public.audit_logs for select
 to authenticated
 using (
   exists (
-    select 1 from public.profiles p
+    select 1
+    from public.profiles p
     where p.id = (select auth.uid())
       and p.status = 'active'
-      and p.role in ('admin','manager','member')
+      and p.role in ('admin','manager')
   )
 );
 
--- All active users, including viewers, may append their own download/view actions.
+-- All active users may append their own actions for accountability.
 drop policy if exists "Active users can append own audit logs" on public.audit_logs;
 create policy "Active users can append own audit logs"
 on public.audit_logs for insert
@@ -188,7 +234,8 @@ to authenticated
 with check (
   actor_id = (select auth.uid())
   and exists (
-    select 1 from public.profiles p
+    select 1
+    from public.profiles p
     where p.id = (select auth.uid()) and p.status = 'active'
   )
 );
@@ -205,7 +252,7 @@ insert into storage.buckets (id, name, public, file_size_limit)
 values ('docket-files', 'docket-files', false, 52428800)
 on conflict (id) do update set public = false, file_size_limit = 52428800;
 
--- Non-viewers may read all docket files. Viewers may read only files attached to active Internal dockets.
+-- Storage visibility mirrors docket visibility.
 drop policy if exists "Active team can read docket files" on storage.objects;
 create policy "Active team can read docket files"
 on storage.objects for select
@@ -218,7 +265,20 @@ using (
     where p.id = (select auth.uid())
       and p.status = 'active'
       and (
-        p.role in ('admin','manager','member')
+        p.role in ('admin','manager')
+        or (
+          p.role = 'member'
+          and exists (
+            select 1
+            from public.dockets d
+            where d.storage_path = storage.objects.name
+              and d.confidentiality = 'Internal'
+              and (
+                d.status = 'active'
+                or (d.status = 'archived' and d.uploaded_by = (select auth.uid()))
+              )
+          )
+        )
         or (
           p.role = 'viewer'
           and exists (
@@ -233,7 +293,7 @@ using (
   )
 );
 
--- Active non-viewers may upload.
+-- Admin/Manager/Member may upload objects. Member classification is enforced at docket insert.
 drop policy if exists "Active team can upload docket files" on storage.objects;
 create policy "Active team can upload docket files"
 on storage.objects for insert
@@ -241,7 +301,8 @@ to authenticated
 with check (
   bucket_id = 'docket-files'
   and exists (
-    select 1 from public.profiles p
+    select 1
+    from public.profiles p
     where p.id = (select auth.uid()) and p.status = 'active' and p.role in ('admin','manager','member')
   )
 );
