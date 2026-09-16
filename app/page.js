@@ -11,6 +11,7 @@ import {
   addDemoActivity, createDemoDocketNumber, getDemoDocument, listDemoActivity,
   listDemoDocuments, patchDemoDocument, saveDemoDocument,
 } from '../lib/demo-db';
+import TeamMembersPanel from './components/team-members';
 
 const navItems = [
   ['dashboard', 'Dashboard', LayoutDashboard],
@@ -70,13 +71,18 @@ export default function Home() {
   const [form, setForm] = useState({ category: 'Administrative', department: 'Administration', confidentiality: 'Internal', documentDate: '', notes: '' });
   const inputRef = useRef(null);
 
+  const availableNavItems = profile?.role === 'admin'
+    ? [...navItems, ['team', 'Team Members', Users]]
+    : navItems;
+  const canManageDocuments = profile?.role !== 'viewer';
+
   useEffect(() => {
     let subscription;
     async function init() {
       if (DATA_MODE === 'demo') {
         const active = localStorage.getItem('rejima-demo-session') === 'true';
         setSignedIn(active);
-        if (active) setProfile({ full_name: 'Demo Team Member', role: 'Admin', status: 'active' });
+        if (active) setProfile({ id: 'demo-admin', full_name: 'Demo Team Member', role: 'admin', status: 'active' });
         setReady(true);
         return;
       }
@@ -117,7 +123,7 @@ export default function Home() {
     setAuthMessage('');
     if (DATA_MODE === 'demo') {
       localStorage.setItem('rejima-demo-session', 'true');
-      setProfile({ full_name: 'Demo Team Member', role: 'Admin', status: 'active' });
+      setProfile({ id: 'demo-admin', full_name: 'Demo Team Member', role: 'admin', status: 'active' });
       setSignedIn(true);
       return;
     }
@@ -165,6 +171,7 @@ export default function Home() {
 
   async function uploadDocuments(event) {
     event.preventDefault();
+    if (!canManageDocuments) return;
     if (!selectedFiles.length) return;
     setUploading(true);
     setNotice('');
@@ -209,6 +216,7 @@ export default function Home() {
   }
 
   async function changeStatus(doc, status) {
+    if (!canManageDocuments) return;
     try {
       if (DATA_MODE === 'demo') {
         const next = await patchDemoDocument(doc.id, { status });
@@ -291,7 +299,7 @@ export default function Home() {
   );
 
   if (profile?.status !== 'active') return (
-    <main className="login-shell"><section className="login-card"><div className="brand-mark"><LockKeyhole /></div><h1>Access pending approval</h1><p className="muted">Your account exists, but an administrator must activate your team access first.</p><button className="secondary-btn full" onClick={logout}>Sign out</button></section></main>
+    <main className="login-shell"><section className="login-card"><div className="brand-mark"><LockKeyhole /></div><h1>Access unavailable</h1><p className="muted">Your account is pending approval or has been disabled by an administrator.</p><button className="secondary-btn full" onClick={logout}>Sign out</button></section></main>
   );
 
   return (
@@ -299,22 +307,22 @@ export default function Home() {
       <aside className={`sidebar ${sidebar ? 'open' : ''}`}>
         <div className="sidebar-head"><div className="brand-mark small"><ShieldCheck /></div><div><strong>Rejima</strong><span>Docket System</span></div><button className="icon-btn mobile-only" onClick={() => setSidebar(false)}><X /></button></div>
         <div className="mode-pill">{DATA_MODE === 'demo' ? <HardDrive size={14} /> : <Cloud size={14} />} {DATA_MODE === 'demo' ? 'Local Demo' : 'Secure Cloud'}</div>
-        <nav>{navItems.map(([id, label, Icon]) => <button key={id} className={view === id ? 'active' : ''} onClick={() => { setView(id); setSidebar(false); }}><Icon size={18} /><span>{label}</span>{id === 'trash' && documents.filter((d) => d.status === 'deleted').length > 0 && <b>{documents.filter((d) => d.status === 'deleted').length}</b>}</button>)}</nav>
+        <nav>{availableNavItems.map(([id, label, Icon]) => <button key={id} className={view === id ? 'active' : ''} onClick={() => { setView(id); setSidebar(false); }}><Icon size={18} /><span>{label}</span>{id === 'trash' && documents.filter((d) => d.status === 'deleted').length > 0 && <b>{documents.filter((d) => d.status === 'deleted').length}</b>}</button>)}</nav>
         <div className="sidebar-footer"><div className="profile-dot">{profile?.full_name?.[0] || 'R'}</div><div><strong>{profile?.full_name || 'Team Member'}</strong><span>{profile?.role || 'Member'}</span></div><button className="icon-btn" onClick={logout} title="Sign out"><LogOut size={17} /></button></div>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
           <button className="icon-btn mobile-only" onClick={() => setSidebar(true)}><Menu /></button>
-          <div><p className="eyebrow">SECURE DOCUMENT OPERATIONS</p><h2>{navItems.find(([id]) => id === view)?.[1] || 'Dashboard'}</h2></div>
-          <div className="top-actions"><button className="primary-btn" onClick={() => setShowUpload(true)}><UploadCloud size={18} /> Upload documents</button></div>
+          <div><p className="eyebrow">SECURE DOCUMENT OPERATIONS</p><h2>{availableNavItems.find(([id]) => id === view)?.[1] || 'Dashboard'}</h2></div>
+          {canManageDocuments && view !== 'team' && <div className="top-actions"><button className="primary-btn" onClick={() => setShowUpload(true)}><UploadCloud size={18} /> Upload documents</button></div>}
         </header>
 
         {DATA_MODE === 'demo' && <div className="demo-banner"><Database size={17} /><span><strong>Demo storage is active.</strong> Uploaded files are saved only in this browser. Connect the new Supabase project before production use.</span></div>}
         {notice && <button className="notice" onClick={() => setNotice('')}><CheckCircle2 size={17} />{notice}<X size={15} /></button>}
 
         {view === 'dashboard' && <>
-          <section className="hero-card"><div><p className="eyebrow">DOCUMENT CONTROL CENTER</p><h3>Every important file, secured and traceable.</h3><p>Use Rejima as the team’s digital backup when physical records are misplaced, damaged, or unavailable.</p></div><button className="hero-upload" onClick={() => setShowUpload(true)}><UploadCloud size={28} /><span>Drop & secure files</span><small>PDF, Word, Excel, images, ZIP and more</small></button></section>
+          <section className="hero-card"><div><p className="eyebrow">DOCUMENT CONTROL CENTER</p><h3>Every important file, secured and traceable.</h3><p>Use Rejima as the team’s digital backup when physical records are misplaced, damaged, or unavailable.</p></div>{canManageDocuments ? <button className="hero-upload" onClick={() => setShowUpload(true)}><UploadCloud size={28} /><span>Drop & secure files</span><small>PDF, Word, Excel, images, ZIP and more</small></button> : <div className="hero-upload"><LockKeyhole size={28} /><span>View-only access</span><small>You can review and download secured documents.</small></div>}</section>
           <section className="stats-grid">
             <article><div className="stat-icon"><Files /></div><div><span>Active dockets</span><strong>{stats.active}</strong></div></article>
             <article><div className="stat-icon"><LockKeyhole /></div><div><span>Confidential</span><strong>{stats.confidential}</strong></div></article>
@@ -323,25 +331,25 @@ export default function Home() {
           </section>
         </>}
 
-        {view === 'activity' ? <ActivityPanel activities={activities} /> : <section className="content-card">
-          <div className="content-head"><div><h3>{view === 'dashboard' ? 'Recent documents' : navItems.find(([id]) => id === view)?.[1]}</h3><p>{visibleDocuments.length} record{visibleDocuments.length !== 1 ? 's' : ''}</p></div><div className="filters"><label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search docket, title, department…" /></label><select value={category} onChange={(e) => setCategory(e.target.value)}><option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></div></div>
-          <DocumentTable rows={view === 'dashboard' ? visibleDocuments.slice(0, 6) : visibleDocuments} view={view} onDownload={downloadDocument} onStatus={changeStatus} />
+        {view === 'activity' ? <ActivityPanel activities={activities} /> : view === 'team' && profile?.role === 'admin' ? <TeamMembersPanel currentUserId={profile.id} /> : <section className="content-card">
+          <div className="content-head"><div><h3>{view === 'dashboard' ? 'Recent documents' : availableNavItems.find(([id]) => id === view)?.[1]}</h3><p>{visibleDocuments.length} record{visibleDocuments.length !== 1 ? 's' : ''}</p></div><div className="filters"><label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search docket, title, department…" /></label><select value={category} onChange={(e) => setCategory(e.target.value)}><option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></div></div>
+          <DocumentTable rows={view === 'dashboard' ? visibleDocuments.slice(0, 6) : visibleDocuments} view={view} onDownload={downloadDocument} onStatus={changeStatus} canManage={canManageDocuments} />
         </section>}
       </section>
 
       {sidebar && <button className="sidebar-backdrop" onClick={() => setSidebar(false)} aria-label="Close menu" />}
-      {showUpload && <UploadModal files={selectedFiles} setFiles={setSelectedFiles} form={form} setForm={setForm} uploading={uploading} dragging={dragging} setDragging={setDragging} inputRef={inputRef} acceptFiles={acceptFiles} onClose={() => { if (!uploading) { setShowUpload(false); setSelectedFiles([]); } }} onSubmit={uploadDocuments} />}
+      {showUpload && canManageDocuments && <UploadModal files={selectedFiles} setFiles={setSelectedFiles} form={form} setForm={setForm} uploading={uploading} dragging={dragging} setDragging={setDragging} inputRef={inputRef} acceptFiles={acceptFiles} onClose={() => { if (!uploading) { setShowUpload(false); setSelectedFiles([]); } }} onSubmit={uploadDocuments} />}
     </main>
   );
 }
 
-function DocumentTable({ rows, view, onDownload, onStatus }) {
+function DocumentTable({ rows, view, onDownload, onStatus, canManage }) {
   if (!rows.length) return <div className="empty-state"><FolderOpen size={40} /><h4>No documents here yet</h4><p>Uploaded documents will appear here with their docket number and tracking details.</p></div>;
-  return <div className="table-wrap"><table><thead><tr><th>Document</th><th>Category</th><th>Security</th><th>Uploaded</th><th>Status</th><th /></tr></thead><tbody>{rows.map((doc) => { const Icon = fileIcon(doc.file_name); return <tr key={doc.id}><td><div className="doc-cell"><div className="file-icon"><Icon size={20} /></div><div><strong>{doc.title}</strong><span>{doc.docket_number} • {bytes(doc.file_size)}</span></div></div></td><td><span className="category-chip">{doc.category}</span><small>{doc.department}</small></td><td><span className={`security-chip ${doc.confidentiality?.toLowerCase()}`}>{doc.confidentiality}</span></td><td><span>{formatDate(doc.created_at)}</span><small>{doc.uploaded_by_name || 'Team member'}</small></td><td><span className={`status-chip ${doc.status}`}>{doc.status}</span></td><td><div className="row-actions"><button title="Download" onClick={() => onDownload(doc)}><Download size={17} /></button>{view === 'archive' || view === 'trash' ? <button title="Restore" onClick={() => onStatus(doc, 'active')}>↺</button> : <><button title="Archive" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button><button title="Recycle" onClick={() => onStatus(doc, 'deleted')}><Trash2 size={17} /></button></>}</div></td></tr>; })}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>Document</th><th>Category</th><th>Security</th><th>Uploaded</th><th>Status</th><th /></tr></thead><tbody>{rows.map((doc) => { const Icon = fileIcon(doc.file_name); return <tr key={doc.id}><td><div className="doc-cell"><div className="file-icon"><Icon size={20} /></div><div><strong>{doc.title}</strong><span>{doc.docket_number} • {bytes(doc.file_size)}</span></div></div></td><td><span className="category-chip">{doc.category}</span><small>{doc.department}</small></td><td><span className={`security-chip ${doc.confidentiality?.toLowerCase()}`}>{doc.confidentiality}</span></td><td><span>{formatDate(doc.created_at)}</span><small>{doc.uploaded_by_name || 'Team member'}</small></td><td><span className={`status-chip ${doc.status}`}>{doc.status}</span></td><td><div className="row-actions"><button title="Download" onClick={() => onDownload(doc)}><Download size={17} /></button>{canManage && (view === 'archive' || view === 'trash' ? <button title="Restore" onClick={() => onStatus(doc, 'active')}>↺</button> : <><button title="Archive" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button><button title="Recycle" onClick={() => onStatus(doc, 'deleted')}><Trash2 size={17} /></button></>)}</div></td></tr>; })}</tbody></table></div>;
 }
 
 function ActivityPanel({ activities }) {
-  return <section className="content-card"><div className="content-head"><div><h3>Audit activity</h3><p>Recent document actions across the workspace</p></div></div>{!activities.length ? <div className="empty-state"><Activity size={40} /><h4>No activity yet</h4><p>Uploads, downloads, archives, and restores will be recorded here.</p></div> : <div className="activity-list">{activities.map((item) => <article key={item.id}><div className="activity-icon"><Activity size={16} /></div><div><strong>{item.actor_name || 'Team member'} {item.action}</strong><span>{item.document_title || item.detail || 'Document activity'}</span></div><time>{formatDate(item.created_at)}</time></article>)}</div>}</section>;
+  return <section className="content-card"><div className="content-head"><div><h3>Audit activity</h3><p>Recent document and account actions across the workspace</p></div></div>{!activities.length ? <div className="empty-state"><Activity size={40} /><h4>No activity yet</h4><p>Uploads, downloads, archives, restores, and team changes will be recorded here.</p></div> : <div className="activity-list">{activities.map((item) => <article key={item.id}><div className="activity-icon"><Activity size={16} /></div><div><strong>{item.actor_name || 'Team member'} {item.action}</strong><span>{item.document_title || item.detail || 'Workspace activity'}</span></div><time>{formatDate(item.created_at)}</time></article>)}</div>}</section>;
 }
 
 function UploadModal({ files, setFiles, form, setForm, uploading, dragging, setDragging, inputRef, acceptFiles, onClose, onSubmit }) {
