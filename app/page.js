@@ -22,6 +22,12 @@ const navItems = [
   ['activity', 'Activity Logs', Activity],
 ];
 
+const memberNavItems = [
+  ['dashboard', 'Dashboard', LayoutDashboard],
+  ['documents', 'All Documents', Files],
+  ['archive', 'Archived', Archive],
+];
+
 const viewerNavItems = [
   ['dashboard', 'Dashboard', LayoutDashboard],
   ['documents', 'All Documents', Files],
@@ -78,10 +84,14 @@ export default function Home() {
 
   const availableNavItems = profile?.role === 'admin'
     ? [...navItems, ['team', 'Team Members', Users]]
-    : profile?.role === 'viewer'
-      ? viewerNavItems
-      : navItems;
-  const canManageDocuments = profile?.role !== 'viewer';
+    : profile?.role === 'manager'
+      ? navItems
+      : profile?.role === 'member'
+        ? memberNavItems
+        : viewerNavItems;
+
+  const canUploadDocuments = ['admin', 'manager', 'member'].includes(profile?.role);
+  const canViewAudit = ['admin', 'manager'].includes(profile?.role);
 
   useEffect(() => {
     let subscription;
@@ -118,9 +128,9 @@ export default function Home() {
   }, [signedIn, profile?.status, profile?.role]);
 
   useEffect(() => {
-    if (profile?.role === 'viewer' && !['dashboard', 'documents'].includes(view)) {
-      setView('dashboard');
-    }
+    if (!profile) return;
+    const allowedViews = availableNavItems.map(([id]) => id);
+    if (!allowedViews.includes(view)) setView('dashboard');
   }, [profile?.role, view]);
 
   async function loadSupabaseProfile(userId) {
@@ -160,10 +170,18 @@ export default function Home() {
     try {
       if (DATA_MODE === 'demo') {
         const demoDocs = await listDemoDocuments();
-        setDocuments(profile?.role === 'viewer'
-          ? demoDocs.filter((doc) => doc.status === 'active' && doc.confidentiality === 'Internal')
-          : demoDocs);
-        setActivities(profile?.role === 'viewer' ? [] : await listDemoActivity());
+        if (profile?.role === 'viewer') {
+          setDocuments(demoDocs.filter((doc) => doc.status === 'active' && doc.confidentiality === 'Internal'));
+          setActivities([]);
+          return;
+        }
+        if (profile?.role === 'member') {
+          setDocuments(demoDocs.filter((doc) => doc.confidentiality === 'Internal' && ['active', 'archived'].includes(doc.status)));
+          setActivities([]);
+          return;
+        }
+        setDocuments(demoDocs);
+        setActivities(await listDemoActivity());
         return;
       }
 
@@ -178,6 +196,20 @@ export default function Home() {
           .order('created_at', { ascending: false });
         if (docsError) throw docsError;
         setDocuments(docs || []);
+        setActivities([]);
+        return;
+      }
+
+      if (profile?.role === 'member') {
+        const { data: docs, error: docsError } = await supabase
+          .from('dockets')
+          .select('*')
+          .eq('confidentiality', 'Internal')
+          .in('status', ['active', 'archived'])
+          .order('created_at', { ascending: false });
+        if (docsError) throw docsError;
+        const visible = (docs || []).filter((doc) => doc.status === 'active' || doc.uploaded_by === profile.id);
+        setDocuments(visible);
         setActivities([]);
         return;
       }
@@ -202,19 +234,20 @@ export default function Home() {
 
   async function uploadDocuments(event) {
     event.preventDefault();
-    if (!canManageDocuments) return;
+    if (!canUploadDocuments) return;
     if (!selectedFiles.length) return;
     setUploading(true);
     setNotice('');
     try {
+      const confidentiality = profile?.role === 'member' ? 'Internal' : form.confidentiality;
       for (const file of selectedFiles) {
         if (DATA_MODE === 'demo') {
           const row = {
             id: crypto.randomUUID(), docket_number: createDemoDocketNumber(), title: file.name,
-            category: form.category, department: form.department, confidentiality: form.confidentiality,
+            category: form.category, department: form.department, confidentiality,
             status: 'active', document_date: form.documentDate || null, notes: form.notes || null,
             file_name: file.name, file_size: file.size, mime_type: file.type || 'application/octet-stream',
-            file_blob: file, uploaded_by_name: 'Demo Team Member', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            file_blob: file, uploaded_by: profile?.id, uploaded_by_name: profile?.full_name || 'Demo Team Member', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
           };
           await saveDemoDocument(row);
           await addDemoActivity('uploaded', row, `Uploaded ${file.name}`);
@@ -226,7 +259,7 @@ export default function Home() {
           const { error: storageError } = await supabase.storage.from('docket-files').upload(path, file, { upsert: false, contentType: file.type || undefined });
           if (storageError) throw storageError;
           const { data: docket, error: insertError } = await supabase.from('dockets').insert({
-            title: file.name, category: form.category, department: form.department, confidentiality: form.confidentiality,
+            title: file.name, category: form.category, department: form.department, confidentiality,
             document_date: form.documentDate || null, notes: form.notes || null, storage_path: path,
             file_name: file.name, file_size: file.size, mime_type: file.type || 'application/octet-stream', uploaded_by: user.id,
           }).select().single();
@@ -247,7 +280,13 @@ export default function Home() {
   }
 
   async function changeStatus(doc, status) {
-    if (!canManageDocuments) return;
+    if (profile?.role === 'viewer') return;
+    if (profile?.role === 'member') {
+      if (doc.uploaded_by !== profile.id || status === 'deleted' || !['active', 'archived'].includes(status)) {
+        setNotice('Members can archive or restore only documents they uploaded.');
+        return;
+      }
+    }
     try {
       if (DATA_MODE === 'demo') {
         const next = await patchDemoDocument(doc.id, { status });
@@ -287,6 +326,9 @@ export default function Home() {
     if (profile?.role === 'viewer') {
       rows = rows.filter((d) => d.status === 'active' && d.confidentiality === 'Internal');
     }
+    if (profile?.role === 'member') {
+      rows = rows.filter((d) => d.confidentiality === 'Internal' && (d.status === 'active' || d.uploaded_by === profile.id));
+    }
     if (view === 'documents' || view === 'dashboard') rows = rows.filter((d) => d.status === 'active');
     if (view === 'confidential') rows = rows.filter((d) => d.status === 'active' && ['Confidential', 'Restricted'].includes(d.confidentiality));
     if (view === 'archive') rows = rows.filter((d) => d.status === 'archived');
@@ -295,7 +337,7 @@ export default function Home() {
     const q = query.trim().toLowerCase();
     if (q) rows = rows.filter((d) => `${d.docket_number} ${d.title} ${d.category} ${d.department}`.toLowerCase().includes(q));
     return rows;
-  }, [documents, view, category, query, profile?.role]);
+  }, [documents, view, category, query, profile?.role, profile?.id]);
 
   const stats = useMemo(() => ({
     active: documents.filter((d) => d.status === 'active').length,
@@ -349,48 +391,54 @@ export default function Home() {
         <header className="topbar">
           <button className="icon-btn mobile-only" onClick={() => setSidebar(true)}><Menu /></button>
           <div><p className="eyebrow">SECURE DOCUMENT OPERATIONS</p><h2>{availableNavItems.find(([id]) => id === view)?.[1] || 'Dashboard'}</h2></div>
-          {canManageDocuments && view !== 'team' && <div className="top-actions"><button className="primary-btn" onClick={() => setShowUpload(true)}><UploadCloud size={18} /> Upload documents</button></div>}
+          {canUploadDocuments && view !== 'team' && <div className="top-actions"><button className="primary-btn" onClick={() => setShowUpload(true)}><UploadCloud size={18} /> Upload documents</button></div>}
         </header>
 
         {DATA_MODE === 'demo' && <div className="demo-banner"><Database size={17} /><span><strong>Demo storage is active.</strong> Uploaded files are saved only in this browser. Connect the new Supabase project before production use.</span></div>}
         {notice && <button className="notice" onClick={() => setNotice('')}><CheckCircle2 size={17} />{notice}<X size={15} /></button>}
 
         {view === 'dashboard' && <>
-          <section className="hero-card"><div><p className="eyebrow">DOCUMENT CONTROL CENTER</p><h3>Every important file, secured and traceable.</h3><p>Use Rejima as the team’s digital backup when physical records are misplaced, damaged, or unavailable.</p></div>{canManageDocuments ? <button className="hero-upload" onClick={() => setShowUpload(true)}><UploadCloud size={28} /><span>Drop & secure files</span><small>PDF, Word, Excel, images, ZIP and more</small></button> : <div className="hero-upload"><LockKeyhole size={28} /><span>View-only access</span><small>You can review and download approved internal documents.</small></div>}</section>
+          <section className="hero-card"><div><p className="eyebrow">DOCUMENT CONTROL CENTER</p><h3>Every important file, secured and traceable.</h3><p>Use Rejima as the team’s digital backup when physical records are misplaced, damaged, or unavailable.</p></div>{canUploadDocuments ? <button className="hero-upload" onClick={() => setShowUpload(true)}><UploadCloud size={28} /><span>Drop & secure files</span><small>{profile?.role === 'member' ? 'Members upload Internal documents only' : 'PDF, Word, Excel, images, ZIP and more'}</small></button> : <div className="hero-upload"><LockKeyhole size={28} /><span>View-only access</span><small>You can review and download approved internal documents.</small></div>}</section>
           <section className="stats-grid">
             <article><div className="stat-icon"><Files /></div><div><span>Active dockets</span><strong>{stats.active}</strong></div></article>
-            {profile?.role !== 'viewer' && <article><div className="stat-icon"><LockKeyhole /></div><div><span>Confidential</span><strong>{stats.confidential}</strong></div></article>}
+            {['admin', 'manager'].includes(profile?.role) && <article><div className="stat-icon"><LockKeyhole /></div><div><span>Confidential</span><strong>{stats.confidential}</strong></div></article>}
             {profile?.role !== 'viewer' && <article><div className="stat-icon"><Archive /></div><div><span>Archived</span><strong>{stats.archived}</strong></div></article>}
             <article><div className="stat-icon"><HardDrive /></div><div><span>Storage used</span><strong>{bytes(stats.storage)}</strong></div></article>
           </section>
         </>}
 
-        {view === 'activity' && profile?.role !== 'viewer' ? <ActivityPanel activities={activities} /> : view === 'team' && profile?.role === 'admin' ? <TeamMembersPanel currentUserId={profile.id} /> : <section className="content-card">
+        {view === 'activity' && canViewAudit ? <ActivityPanel activities={activities} /> : view === 'team' && profile?.role === 'admin' ? <TeamMembersPanel currentUserId={profile.id} /> : <section className="content-card">
           <div className="content-head"><div><h3>{view === 'dashboard' ? 'Recent documents' : availableNavItems.find(([id]) => id === view)?.[1]}</h3><p>{visibleDocuments.length} record{visibleDocuments.length !== 1 ? 's' : ''}</p></div><div className="filters"><label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search docket, title, department…" /></label><select value={category} onChange={(e) => setCategory(e.target.value)}><option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></div></div>
-          <DocumentTable rows={view === 'dashboard' ? visibleDocuments.slice(0, 6) : visibleDocuments} view={view} onDownload={downloadDocument} onStatus={changeStatus} canManage={canManageDocuments} />
+          <DocumentTable rows={view === 'dashboard' ? visibleDocuments.slice(0, 6) : visibleDocuments} view={view} onDownload={downloadDocument} onStatus={changeStatus} role={profile?.role} currentUserId={profile?.id} />
         </section>}
       </section>
 
       {sidebar && <button className="sidebar-backdrop" onClick={() => setSidebar(false)} aria-label="Close menu" />}
-      {showUpload && canManageDocuments && <UploadModal files={selectedFiles} setFiles={setSelectedFiles} form={form} setForm={setForm} uploading={uploading} dragging={dragging} setDragging={setDragging} inputRef={inputRef} acceptFiles={acceptFiles} onClose={() => { if (!uploading) { setShowUpload(false); setSelectedFiles([]); } }} onSubmit={uploadDocuments} />}
+      {showUpload && canUploadDocuments && <UploadModal files={selectedFiles} setFiles={setSelectedFiles} form={form} setForm={setForm} uploading={uploading} dragging={dragging} setDragging={setDragging} inputRef={inputRef} acceptFiles={acceptFiles} role={profile?.role} onClose={() => { if (!uploading) { setShowUpload(false); setSelectedFiles([]); } }} onSubmit={uploadDocuments} />}
     </main>
   );
 }
 
-function DocumentTable({ rows, view, onDownload, onStatus, canManage }) {
+function DocumentTable({ rows, view, onDownload, onStatus, role, currentUserId }) {
   if (!rows.length) return <div className="empty-state"><FolderOpen size={40} /><h4>No documents here yet</h4><p>Uploaded documents will appear here with their docket number and tracking details.</p></div>;
-  return <div className="table-wrap"><table><thead><tr><th>Document</th><th>Category</th><th>Security</th><th>Uploaded</th><th>Status</th><th /></tr></thead><tbody>{rows.map((doc) => { const Icon = fileIcon(doc.file_name); return <tr key={doc.id}><td><div className="doc-cell"><div className="file-icon"><Icon size={20} /></div><div><strong>{doc.title}</strong><span>{doc.docket_number} • {bytes(doc.file_size)}</span></div></div></td><td><span className="category-chip">{doc.category}</span><small>{doc.department}</small></td><td><span className={`security-chip ${doc.confidentiality?.toLowerCase()}`}>{doc.confidentiality}</span></td><td><span>{formatDate(doc.created_at)}</span><small>{doc.uploaded_by_name || 'Team member'}</small></td><td><span className={`status-chip ${doc.status}`}>{doc.status}</span></td><td><div className="row-actions"><button title="Download" onClick={() => onDownload(doc)}><Download size={17} /></button>{canManage && (view === 'archive' || view === 'trash' ? <button title="Restore" onClick={() => onStatus(doc, 'active')}>↺</button> : <><button title="Archive" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button><button title="Recycle" onClick={() => onStatus(doc, 'deleted')}><Trash2 size={17} /></button></>)}</div></td></tr>; })}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>Document</th><th>Category</th><th>Security</th><th>Uploaded</th><th>Status</th><th /></tr></thead><tbody>{rows.map((doc) => {
+    const Icon = fileIcon(doc.file_name);
+    const canManageAll = ['admin', 'manager'].includes(role);
+    const canManageOwn = role === 'member' && doc.uploaded_by === currentUserId;
+    return <tr key={doc.id}><td><div className="doc-cell"><div className="file-icon"><Icon size={20} /></div><div><strong>{doc.title}</strong><span>{doc.docket_number} • {bytes(doc.file_size)}</span></div></div></td><td><span className="category-chip">{doc.category}</span><small>{doc.department}</small></td><td><span className={`security-chip ${doc.confidentiality?.toLowerCase()}`}>{doc.confidentiality}</span></td><td><span>{formatDate(doc.created_at)}</span><small>{doc.uploaded_by_name || 'Team member'}</small></td><td><span className={`status-chip ${doc.status}`}>{doc.status}</span></td><td><div className="row-actions"><button title="Download" onClick={() => onDownload(doc)}><Download size={17} /></button>{canManageAll && (view === 'archive' || view === 'trash' ? <button title="Restore" onClick={() => onStatus(doc, 'active')}>↺</button> : <><button title="Archive" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button><button title="Recycle" onClick={() => onStatus(doc, 'deleted')}><Trash2 size={17} /></button></>)}{canManageOwn && (view === 'archive' ? <button title="Restore your document" onClick={() => onStatus(doc, 'active')}>↺</button> : <button title="Archive your document" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button>)}</div></td></tr>;
+  })}</tbody></table></div>;
 }
 
 function ActivityPanel({ activities }) {
   return <section className="content-card"><div className="content-head"><div><h3>Audit activity</h3><p>Recent document and account actions across the workspace</p></div></div>{!activities.length ? <div className="empty-state"><Activity size={40} /><h4>No activity yet</h4><p>Uploads, downloads, archives, restores, and team changes will be recorded here.</p></div> : <div className="activity-list">{activities.map((item) => <article key={item.id}><div className="activity-icon"><Activity size={16} /></div><div><strong>{item.actor_name || 'Team member'} {item.action}</strong><span>{item.document_title || item.detail || 'Workspace activity'}</span></div><time>{formatDate(item.created_at)}</time></article>)}</div>}</section>;
 }
 
-function UploadModal({ files, setFiles, form, setForm, uploading, dragging, setDragging, inputRef, acceptFiles, onClose, onSubmit }) {
+function UploadModal({ files, setFiles, form, setForm, uploading, dragging, setDragging, inputRef, acceptFiles, role, onClose, onSubmit }) {
+  const securityOptions = role === 'member' ? ['Internal'] : ['Internal', 'Confidential', 'Restricted'];
   return <div className="modal-backdrop"><form className="upload-modal" onSubmit={onSubmit}><div className="modal-head"><div><p className="eyebrow">SECURE INTAKE</p><h3>Upload documents</h3></div><button type="button" className="icon-btn" onClick={onClose}><X /></button></div>
     <button type="button" className={`drop-zone ${dragging ? 'dragging' : ''}`} onClick={() => inputRef.current?.click()} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(e) => { e.preventDefault(); setDragging(false); acceptFiles(e.dataTransfer.files); }}><UploadCloud size={34} /><strong>Drag & drop files here</strong><span>or tap to browse • up to 50 MB per file</span><input ref={inputRef} type="file" multiple hidden onChange={(e) => acceptFiles(e.target.files)} /></button>
     {!!files.length && <div className="selected-files">{files.map((file, i) => { const Icon = fileIcon(file.name); return <div key={`${file.name}-${i}`}><Icon size={18} /><span><strong>{file.name}</strong><small>{bytes(file.size)}</small></span><button type="button" onClick={() => setFiles(files.filter((_, index) => index !== i))}><X size={15} /></button></div>; })}</div>}
-    <div className="form-grid"><label>Category<select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>{categories.map((item) => <option key={item}>{item}</option>)}</select></label><label>Department<select value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })}>{departments.map((item) => <option key={item}>{item}</option>)}</select></label><label>Security<select value={form.confidentiality} onChange={(e) => setForm({ ...form, confidentiality: e.target.value })}><option>Internal</option><option>Confidential</option><option>Restricted</option></select></label><label>Document date<input type="date" value={form.documentDate} onChange={(e) => setForm({ ...form, documentDate: e.target.value })} /></label><label className="wide">Notes<textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Optional description or reference details" /></label></div>
+    <div className="form-grid"><label>Category<select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>{categories.map((item) => <option key={item}>{item}</option>)}</select></label><label>Department<select value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })}>{departments.map((item) => <option key={item}>{item}</option>)}</select></label><label>Security<select value={role === 'member' ? 'Internal' : form.confidentiality} disabled={role === 'member'} onChange={(e) => setForm({ ...form, confidentiality: e.target.value })}>{securityOptions.map((item) => <option key={item}>{item}</option>)}</select></label><label>Document date<input type="date" value={form.documentDate} onChange={(e) => setForm({ ...form, documentDate: e.target.value })} /></label><label className="wide">Notes<textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Optional description or reference details" /></label></div>
     <div className="modal-actions"><button type="button" className="secondary-btn" onClick={onClose}>Cancel</button><button className="primary-btn" disabled={!files.length || uploading}>{uploading ? 'Securing files…' : `Secure ${files.length || ''} file${files.length === 1 ? '' : 's'}`}</button></div>
   </form></div>;
 }
