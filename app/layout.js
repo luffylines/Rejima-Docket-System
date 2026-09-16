@@ -2,6 +2,7 @@ import './globals.css';
 import './admin.css';
 import './preview.css';
 import './folders.css';
+import './folder-trash.css';
 import FolderUploadGuard from './components/folder-upload-guard';
 
 export const metadata = {
