@@ -113,15 +113,25 @@ on public.profiles for select
 to authenticated
 using ((select auth.uid()) = id);
 
--- Active team members can read dockets.
+-- Admin/manager/member can read all dockets. Viewers can only read active Internal dockets.
 drop policy if exists "Active team can read dockets" on public.dockets;
 create policy "Active team can read dockets"
 on public.dockets for select
 to authenticated
 using (
   exists (
-    select 1 from public.profiles p
-    where p.id = (select auth.uid()) and p.status = 'active'
+    select 1
+    from public.profiles p
+    where p.id = (select auth.uid())
+      and p.status = 'active'
+      and (
+        p.role in ('admin','manager','member')
+        or (
+          p.role = 'viewer'
+          and public.dockets.status = 'active'
+          and public.dockets.confidentiality = 'Internal'
+        )
+      )
   )
 );
 
@@ -156,7 +166,7 @@ with check (
   )
 );
 
--- Audit trail: active members may read; authenticated active users may append their own actions.
+-- Audit trail: viewer accounts do not get workspace-wide audit history.
 drop policy if exists "Active team can read audit logs" on public.audit_logs;
 create policy "Active team can read audit logs"
 on public.audit_logs for select
@@ -164,10 +174,13 @@ to authenticated
 using (
   exists (
     select 1 from public.profiles p
-    where p.id = (select auth.uid()) and p.status = 'active'
+    where p.id = (select auth.uid())
+      and p.status = 'active'
+      and p.role in ('admin','manager','member')
   )
 );
 
+-- All active users, including viewers, may append their own download/view actions.
 drop policy if exists "Active users can append own audit logs" on public.audit_logs;
 create policy "Active users can append own audit logs"
 on public.audit_logs for insert
@@ -192,7 +205,7 @@ insert into storage.buckets (id, name, public, file_size_limit)
 values ('docket-files', 'docket-files', false, 52428800)
 on conflict (id) do update set public = false, file_size_limit = 52428800;
 
--- Active team may read/download all docket files. Private bucket means signed URLs/downloads still enforce this.
+-- Non-viewers may read all docket files. Viewers may read only files attached to active Internal dockets.
 drop policy if exists "Active team can read docket files" on storage.objects;
 create policy "Active team can read docket files"
 on storage.objects for select
@@ -200,8 +213,23 @@ to authenticated
 using (
   bucket_id = 'docket-files'
   and exists (
-    select 1 from public.profiles p
-    where p.id = (select auth.uid()) and p.status = 'active'
+    select 1
+    from public.profiles p
+    where p.id = (select auth.uid())
+      and p.status = 'active'
+      and (
+        p.role in ('admin','manager','member')
+        or (
+          p.role = 'viewer'
+          and exists (
+            select 1
+            from public.dockets d
+            where d.storage_path = storage.objects.name
+              and d.status = 'active'
+              and d.confidentiality = 'Internal'
+          )
+        )
+      )
   )
 );
 
