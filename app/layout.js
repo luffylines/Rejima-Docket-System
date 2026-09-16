@@ -3,7 +3,9 @@ import './admin.css';
 import './preview.css';
 import './folders.css';
 import './folder-trash.css';
+import './account-shortcut.css';
 import FolderUploadGuard from './components/folder-upload-guard';
+import AccountSettingsShortcut from './components/account-settings-shortcut';
 
 export const metadata = {
   title: 'Rejima Docket System',
@@ -16,6 +18,7 @@ export default function RootLayout({ children }) {
       <body>
         <FolderUploadGuard />
         {children}
+        <AccountSettingsShortcut />
       </body>
     </html>
   );
