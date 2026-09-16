@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity, Archive, CheckCircle2, Cloud, Database, Download, File, FileArchive,
+  Activity, Archive, CheckCircle2, Cloud, Database, Download, Eye, File, FileArchive,
   FileImage, Files, FileSpreadsheet, FileText, FolderOpen, HardDrive, LayoutDashboard,
   LockKeyhole, LogOut, Menu, Search, ShieldCheck, Trash2, UploadCloud, Users, X,
 } from 'lucide-react';
@@ -24,7 +24,7 @@ const navItems = [
 
 const memberNavItems = [
   ['dashboard', 'Dashboard', LayoutDashboard],
-  ['documents', 'All Documents', Files],
+  ['documents', 'My Documents', Files],
   ['archive', 'Archived', Archive],
 ];
 
@@ -69,6 +69,15 @@ function sanitize(name) {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
+function previewKind(doc) {
+  const mime = String(doc?.mime_type || '').toLowerCase();
+  const ext = String(doc?.file_name || '').split('.').pop()?.toLowerCase();
+  if (mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) return 'image';
+  if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
+  if (mime.startsWith('text/') || ['txt', 'csv'].includes(ext)) return 'text';
+  return 'other';
+}
+
 export default function Home() {
   const [ready, setReady] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
@@ -87,6 +96,7 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [notice, setNotice] = useState('');
+  const [preview, setPreview] = useState(null);
   const [form, setForm] = useState({ category: 'Administrative', department: 'Administration', confidentiality: 'Internal', documentDate: '', notes: '' });
   const inputRef = useRef(null);
 
@@ -168,6 +178,7 @@ export default function Home() {
   }
 
   async function logout() {
+    closePreview();
     if (DATA_MODE === 'demo') localStorage.removeItem('rejima-demo-session');
     else await getSupabase().auth.signOut();
     setSignedIn(false);
@@ -184,7 +195,7 @@ export default function Home() {
           return;
         }
         if (profile?.role === 'member') {
-          setDocuments(demoDocs.filter((doc) => doc.confidentiality === 'Internal' && ['active', 'archived'].includes(doc.status)));
+          setDocuments(demoDocs.filter((doc) => doc.uploaded_by === profile.id && doc.confidentiality === 'Internal' && ['active', 'archived'].includes(doc.status)));
           setActivities([]);
           return;
         }
@@ -212,12 +223,12 @@ export default function Home() {
         const { data: docs, error: docsError } = await supabase
           .from('dockets')
           .select('*')
+          .eq('uploaded_by', profile.id)
           .eq('confidentiality', 'Internal')
           .in('status', ['active', 'archived'])
           .order('created_at', { ascending: false });
         if (docsError) throw docsError;
-        const visible = (docs || []).filter((doc) => doc.status === 'active' || doc.uploaded_by === profile.id);
-        setDocuments(visible);
+        setDocuments(docs || []);
         setActivities([]);
         return;
       }
@@ -242,8 +253,7 @@ export default function Home() {
 
   async function uploadDocuments(event) {
     event.preventDefault();
-    if (!canUploadDocuments) return;
-    if (!selectedFiles.length) return;
+    if (!canUploadDocuments || !selectedFiles.length) return;
     setUploading(true);
     setNotice('');
     try {
@@ -271,14 +281,18 @@ export default function Home() {
             document_date: form.documentDate || null, notes: form.notes || null, storage_path: path,
             file_name: file.name, file_size: file.size, mime_type: file.type || 'application/octet-stream', uploaded_by: user.id,
           }).select().single();
-          if (insertError) { await supabase.storage.from('docket-files').remove([path]); throw insertError; }
+          if (insertError) {
+            await supabase.storage.from('docket-files').remove([path]);
+            throw insertError;
+          }
           await supabase.from('audit_logs').insert({ action: 'uploaded', docket_id: docket.id, detail: `Uploaded ${file.name}`, actor_id: user.id });
         }
       }
+      const count = selectedFiles.length;
       setSelectedFiles([]);
       setShowUpload(false);
       setForm({ category: 'Administrative', department: 'Administration', confidentiality: 'Internal', documentDate: '', notes: '' });
-      setNotice(`${selectedFiles.length} document${selectedFiles.length > 1 ? 's' : ''} secured successfully.`);
+      setNotice(`${count} document${count > 1 ? 's' : ''} secured successfully.`);
       await refresh();
     } catch (error) {
       setNotice(error.message || 'Upload failed.');
@@ -291,7 +305,7 @@ export default function Home() {
     if (profile?.role === 'viewer') return;
     if (profile?.role === 'member') {
       if (doc.uploaded_by !== profile.id || status === 'deleted' || !['active', 'archived'].includes(status)) {
-        setNotice('Members can archive or restore only documents they uploaded.');
+        setNotice('Members can archive or restore only their own documents.');
         return;
       }
     }
@@ -311,7 +325,46 @@ export default function Home() {
         await supabase.from('audit_logs').insert({ action: status === 'deleted' ? 'moved to recycle bin' : status === 'archived' ? 'archived' : 'restored', docket_id: doc.id, detail: `${doc.title} is now ${status}`, actor_id: user.id });
       }
       await refresh();
-    } catch (error) { setNotice(error.message); }
+    } catch (error) {
+      setNotice(error.message);
+    }
+  }
+
+  async function logFileAction(action, doc) {
+    if (DATA_MODE === 'demo') {
+      await addDemoActivity(action, doc, `${action === 'previewed' ? 'Previewed' : 'Downloaded'} ${doc.file_name}`);
+      return;
+    }
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) await supabase.from('audit_logs').insert({ action, docket_id: doc.id, detail: `${action === 'previewed' ? 'Previewed' : 'Downloaded'} ${doc.file_name}`, actor_id: user.id });
+  }
+
+  async function previewDocument(doc) {
+    setNotice('');
+    try {
+      let url;
+      let objectUrl = false;
+      if (DATA_MODE === 'demo') {
+        const stored = await getDemoDocument(doc.id);
+        url = URL.createObjectURL(stored.file_blob);
+        objectUrl = true;
+      } else {
+        const supabase = getSupabase();
+        const { data, error } = await supabase.storage.from('docket-files').createSignedUrl(doc.storage_path, 300);
+        if (error) throw error;
+        url = data.signedUrl;
+      }
+      setPreview({ doc, url, kind: previewKind(doc), objectUrl });
+      await logFileAction('previewed', doc);
+    } catch (error) {
+      setNotice(error.message || 'Unable to preview this file.');
+    }
+  }
+
+  function closePreview() {
+    if (preview?.objectUrl && preview?.url) URL.revokeObjectURL(preview.url);
+    setPreview(null);
   }
 
   async function downloadDocument(doc) {
@@ -319,18 +372,26 @@ export default function Home() {
       if (DATA_MODE === 'demo') {
         const stored = await getDemoDocument(doc.id);
         const url = URL.createObjectURL(stored.file_blob);
-        const a = document.createElement('a'); a.href = url; a.download = stored.file_name; a.click(); URL.revokeObjectURL(url);
-        await addDemoActivity('downloaded', doc, `Downloaded ${doc.file_name}`);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = stored.file_name;
+        a.click();
+        URL.revokeObjectURL(url);
       } else {
         const supabase = getSupabase();
         const { data, error } = await supabase.storage.from('docket-files').createSignedUrl(doc.storage_path, 60);
         if (error) throw error;
-        window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
-        const { data: { user } } = await supabase.auth.getUser();
-        await supabase.from('audit_logs').insert({ action: 'downloaded', docket_id: doc.id, detail: `Downloaded ${doc.file_name}`, actor_id: user.id });
+        const a = document.createElement('a');
+        a.href = data.signedUrl;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.click();
       }
+      await logFileAction('downloaded', doc);
       await refresh();
-    } catch (error) { setNotice(error.message); }
+    } catch (error) {
+      setNotice(error.message);
+    }
   }
 
   const visibleDocuments = useMemo(() => {
@@ -339,7 +400,7 @@ export default function Home() {
       rows = rows.filter((d) => d.status === 'active' && d.confidentiality === 'Internal');
     }
     if (profile?.role === 'member') {
-      rows = rows.filter((d) => d.confidentiality === 'Internal' && (d.status === 'active' || d.uploaded_by === profile.id));
+      rows = rows.filter((d) => d.uploaded_by === profile.id && d.confidentiality === 'Internal' && ['active', 'archived'].includes(d.status));
     }
     if (view === 'documents' || view === 'dashboard') rows = rows.filter((d) => d.status === 'active');
     if (view === 'confidential') rows = rows.filter((d) => d.status === 'active' && ['Confidential', 'Restricted'].includes(d.confidentiality));
@@ -410,40 +471,58 @@ export default function Home() {
         {notice && <button className="notice" onClick={() => setNotice('')}><CheckCircle2 size={17} />{notice}<X size={15} /></button>}
 
         {view === 'dashboard' && <>
-          <section className="hero-card"><div><p className="eyebrow">DOCUMENT CONTROL CENTER</p><h3>Every important file, secured and traceable.</h3><p>Use Rejima as the team’s digital backup when physical records are misplaced, damaged, or unavailable.</p></div>{canUploadDocuments ? <button className="hero-upload" onClick={() => setShowUpload(true)}><UploadCloud size={28} /><span>Drop & secure files</span><small>{profile?.role === 'member' ? 'Members upload Internal documents only' : 'PDF, Word, Excel, images, ZIP and more'}</small></button> : <div className="hero-upload"><LockKeyhole size={28} /><span>View-only access</span><small>You can review and download approved internal documents.</small></div>}</section>
+          <section className="hero-card"><div><p className="eyebrow">DOCUMENT CONTROL CENTER</p><h3>Every important file, secured and traceable.</h3><p>Use Rejima as the team’s digital backup when physical records are misplaced, damaged, or unavailable.</p></div>{canUploadDocuments ? <button className="hero-upload" onClick={() => setShowUpload(true)}><UploadCloud size={28} /><span>Drop & secure files</span><small>{profile?.role === 'member' ? 'Your private Internal documents only' : 'PDF, Word, Excel, images, ZIP and more'}</small></button> : <div className="hero-upload"><LockKeyhole size={28} /><span>View-only access</span><small>You can review and download approved internal documents.</small></div>}</section>
           <section className="stats-grid">
-            <article><div className="stat-icon"><Files /></div><div><span>Active dockets</span><strong>{stats.active}</strong></div></article>
+            <article><div className="stat-icon"><Files /></div><div><span>{profile?.role === 'member' ? 'My active dockets' : 'Active dockets'}</span><strong>{stats.active}</strong></div></article>
             {['admin', 'manager'].includes(profile?.role) && <article><div className="stat-icon"><LockKeyhole /></div><div><span>Confidential</span><strong>{stats.confidential}</strong></div></article>}
             {profile?.role !== 'viewer' && <article><div className="stat-icon"><Archive /></div><div><span>Archived</span><strong>{stats.archived}</strong></div></article>}
-            <article><div className="stat-icon"><HardDrive /></div><div><span>Storage used</span><strong>{bytes(stats.storage)}</strong></div></article>
+            <article><div className="stat-icon"><HardDrive /></div><div><span>{profile?.role === 'member' ? 'My storage' : 'Storage used'}</span><strong>{bytes(stats.storage)}</strong></div></article>
           </section>
         </>}
 
         {view === 'activity' && canViewAudit ? <ActivityPanel activities={activities} /> : view === 'team' && profile?.role === 'admin' ? <TeamMembersPanel currentUserId={profile.id} /> : <section className="content-card">
           <div className="content-head"><div><h3>{view === 'dashboard' ? 'Recent documents' : availableNavItems.find(([id]) => id === view)?.[1]}</h3><p>{view === 'trash' ? `${visibleDocuments.length} in recycle bin • Permanently deleted after 15 days` : `${visibleDocuments.length} record${visibleDocuments.length !== 1 ? 's' : ''}`}</p></div><div className="filters"><label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search docket, title, department…" /></label><select value={category} onChange={(e) => setCategory(e.target.value)}><option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></div></div>
-          <DocumentTable rows={view === 'dashboard' ? visibleDocuments.slice(0, 6) : visibleDocuments} view={view} onDownload={downloadDocument} onStatus={changeStatus} role={profile?.role} currentUserId={profile?.id} />
+          <DocumentTable rows={view === 'dashboard' ? visibleDocuments.slice(0, 6) : visibleDocuments} view={view} onPreview={previewDocument} onDownload={downloadDocument} onStatus={changeStatus} role={profile?.role} currentUserId={profile?.id} />
         </section>}
       </section>
 
       {sidebar && <button className="sidebar-backdrop" onClick={() => setSidebar(false)} aria-label="Close menu" />}
       {showUpload && canUploadDocuments && <UploadModal files={selectedFiles} setFiles={setSelectedFiles} form={form} setForm={setForm} uploading={uploading} dragging={dragging} setDragging={setDragging} inputRef={inputRef} acceptFiles={acceptFiles} role={profile?.role} onClose={() => { if (!uploading) { setShowUpload(false); setSelectedFiles([]); } }} onSubmit={uploadDocuments} />}
+      {preview && <PreviewModal preview={preview} onClose={closePreview} onDownload={() => downloadDocument(preview.doc)} />}
     </main>
   );
 }
 
-function DocumentTable({ rows, view, onDownload, onStatus, role, currentUserId }) {
+function DocumentTable({ rows, view, onPreview, onDownload, onStatus, role, currentUserId }) {
   if (!rows.length) return <div className="empty-state"><FolderOpen size={40} /><h4>No documents here yet</h4><p>Uploaded documents will appear here with their docket number and tracking details.</p></div>;
   return <div className="table-wrap"><table><thead><tr><th>Document</th><th>Category</th><th>Security</th><th>Uploaded</th><th>Status</th><th /></tr></thead><tbody>{rows.map((doc) => {
     const Icon = fileIcon(doc.file_name);
     const canManageAll = ['admin', 'manager'].includes(role);
     const canManageOwn = role === 'member' && doc.uploaded_by === currentUserId;
     const retention = doc.status === 'deleted' ? retentionSummary(doc.delete_after) : null;
-    return <tr key={doc.id}><td><div className="doc-cell"><div className="file-icon"><Icon size={20} /></div><div><strong>{doc.title}</strong><span>{doc.docket_number} • {bytes(doc.file_size)}</span></div></div></td><td><span className="category-chip">{doc.category}</span><small>{doc.department}</small></td><td><span className={`security-chip ${doc.confidentiality?.toLowerCase()}`}>{doc.confidentiality}</span></td><td><span>{formatDate(doc.created_at)}</span><small>{doc.uploaded_by_name || 'Team member'}</small></td><td><span className={`status-chip ${doc.status}`}>{doc.status}</span>{retention && <small>Auto-delete {retention}</small>}</td><td><div className="row-actions"><button title="Download" onClick={() => onDownload(doc)}><Download size={17} /></button>{canManageAll && (view === 'archive' || view === 'trash' ? <button title="Restore" onClick={() => onStatus(doc, 'active')}>↺</button> : <><button title="Archive" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button><button title="Recycle" onClick={() => onStatus(doc, 'deleted')}><Trash2 size={17} /></button></>)}{canManageOwn && (view === 'archive' ? <button title="Restore your document" onClick={() => onStatus(doc, 'active')}>↺</button> : <button title="Archive your document" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button>)}</div></td></tr>;
+    return <tr key={doc.id}><td><div className="doc-cell"><div className="file-icon"><Icon size={20} /></div><div><button className="doc-title-btn" onClick={() => onPreview(doc)} title="Preview file">{doc.title}</button><span>{doc.docket_number} • {bytes(doc.file_size)}</span></div></div></td><td><span className="category-chip">{doc.category}</span><small>{doc.department}</small></td><td><span className={`security-chip ${doc.confidentiality?.toLowerCase()}`}>{doc.confidentiality}</span></td><td><span>{formatDate(doc.created_at)}</span><small>{doc.uploaded_by_name || (role === 'member' ? 'You' : 'Team member')}</small></td><td><span className={`status-chip ${doc.status}`}>{doc.status}</span>{retention && <small>Auto-delete {retention}</small>}</td><td><div className="row-actions"><button title="Preview" onClick={() => onPreview(doc)}><Eye size={17} /></button><button title="Download" onClick={() => onDownload(doc)}><Download size={17} /></button>{canManageAll && (view === 'archive' || view === 'trash' ? <button title="Restore" onClick={() => onStatus(doc, 'active')}>↺</button> : <><button title="Archive" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button><button title="Recycle" onClick={() => onStatus(doc, 'deleted')}><Trash2 size={17} /></button></>)}{canManageOwn && (view === 'archive' ? <button title="Restore your document" onClick={() => onStatus(doc, 'active')}>↺</button> : <button title="Archive your document" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button>)}</div></td></tr>;
   })}</tbody></table></div>;
 }
 
+function PreviewModal({ preview, onClose, onDownload }) {
+  const { doc, url, kind } = preview;
+  return <div className="modal-backdrop preview-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <section className="preview-modal">
+      <div className="preview-head">
+        <div><p className="eyebrow">SECURE FILE PREVIEW</p><h3>{doc.title}</h3><span>{doc.docket_number} • {bytes(doc.file_size)} • {doc.confidentiality}</span></div>
+        <div className="preview-actions"><button className="secondary-btn" onClick={onDownload}><Download size={16} /> Download</button><button className="icon-btn" onClick={onClose} title="Close preview"><X /></button></div>
+      </div>
+      <div className="preview-body">
+        {kind === 'image' && <img src={url} alt={doc.title} />}
+        {(kind === 'pdf' || kind === 'text') && <iframe src={url} title={doc.title} />}
+        {kind === 'other' && <div className="preview-fallback"><FileText size={46} /><h4>Secure browser preview is not available for this file type.</h4><p>Word, Excel, ZIP, and some other formats cannot be rendered safely inside the browser. You can open the signed file link or download it.</p><div><a className="secondary-btn" href={url} target="_blank" rel="noopener noreferrer">Open file</a><button className="primary-btn" onClick={onDownload}><Download size={16} /> Download</button></div></div>}
+      </div>
+    </section>
+  </div>;
+}
+
 function ActivityPanel({ activities }) {
-  return <section className="content-card"><div className="content-head"><div><h3>Audit activity</h3><p>Recent document and account actions across the workspace</p></div></div>{!activities.length ? <div className="empty-state"><Activity size={40} /><h4>No activity yet</h4><p>Uploads, downloads, archives, restores, and team changes will be recorded here.</p></div> : <div className="activity-list">{activities.map((item) => <article key={item.id}><div className="activity-icon"><Activity size={16} /></div><div><strong>{item.actor_name || 'Team member'} {item.action}</strong><span>{item.document_title || item.detail || 'Workspace activity'}</span></div><time>{formatDate(item.created_at)}</time></article>)}</div>}</section>;
+  return <section className="content-card"><div className="content-head"><div><h3>Audit activity</h3><p>Recent document and account actions across the workspace</p></div></div>{!activities.length ? <div className="empty-state"><Activity size={40} /><h4>No activity yet</h4><p>Uploads, previews, downloads, archives, restores, and team changes will be recorded here.</p></div> : <div className="activity-list">{activities.map((item) => <article key={item.id}><div className="activity-icon"><Activity size={16} /></div><div><strong>{item.actor_name || 'Team member'} {item.action}</strong><span>{item.document_title || item.detail || 'Workspace activity'}</span></div><time>{formatDate(item.created_at)}</time></article>)}</div>}</section>;
 }
 
 function UploadModal({ files, setFiles, form, setForm, uploading, dragging, setDragging, inputRef, acceptFiles, role, onClose, onSubmit }) {
