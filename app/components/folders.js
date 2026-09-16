@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft, Download, Eye, File, FileArchive, FileImage, FileSpreadsheet, FileText,
-  FolderOpen, FolderPlus, LockKeyhole, MoreVertical, Pencil, Share2, UploadCloud,
-  UserPlus, Users, X,
+  FolderOpen, FolderPlus, LockKeyhole, MoreVertical, Pencil, RotateCcw, Share2, Trash2,
+  UploadCloud, UserPlus, Users, X,
 } from 'lucide-react';
 import { DATA_MODE, getSupabase } from '../../lib/supabase';
 
@@ -21,6 +21,14 @@ function bytes(size = 0) {
 function formatDate(value) {
   if (!value) return '—';
   return new Intl.DateTimeFormat('en-PH', { month: 'short', day: '2-digit', year: 'numeric' }).format(new Date(value));
+}
+
+function retentionSummary(value) {
+  if (!value) return '15 days remaining';
+  const deadline = new Date(value);
+  if (Number.isNaN(deadline.getTime())) return '15 days remaining';
+  const days = Math.max(0, Math.ceil((deadline.getTime() - Date.now()) / 86400000));
+  return `Auto-delete ${formatDate(value)} • ${days} day${days === 1 ? '' : 's'} left`;
 }
 
 function sanitize(name) {
@@ -53,10 +61,12 @@ export default function FoldersPanel({ profile, onNotice }) {
   const [folderDocs, setFolderDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openMenu, setOpenMenu] = useState(null);
+  const [trashMode, setTrashMode] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState('');
   const [renameFolder, setRenameFolder] = useState(null);
   const [renameName, setRenameName] = useState('');
+  const [deleteFolderTarget, setDeleteFolderTarget] = useState(null);
   const [shareFolder, setShareFolder] = useState(null);
   const [directory, setDirectory] = useState([]);
   const [folderShareRows, setFolderShareRows] = useState([]);
@@ -92,7 +102,12 @@ export default function FoldersPanel({ profile, onNotice }) {
       setFileSummary((docs || []).filter((doc) => doc.status !== 'deleted'));
       if (selectedFolder) {
         const fresh = (folderRows || []).find((folder) => folder.id === selectedFolder.id);
-        if (fresh) setSelectedFolder(fresh);
+        if (fresh?.status === 'deleted') {
+          setSelectedFolder(null);
+          setFolderDocs([]);
+        } else if (fresh) {
+          setSelectedFolder(fresh);
+        }
       }
     } catch (error) {
       onNotice?.(error.message || 'Unable to load folders.');
@@ -116,6 +131,7 @@ export default function FoldersPanel({ profile, onNotice }) {
   }
 
   function canEdit(folder) {
+    if (folder.status === 'deleted') return false;
     if (canManage(folder)) return true;
     return myShare(folder.id)?.permission === 'editor';
   }
@@ -148,6 +164,7 @@ export default function FoldersPanel({ profile, onNotice }) {
       await logFolderAction('created folder', `Created folder ${name}`);
       setCreateOpen(false);
       setCreateName('');
+      setTrashMode(false);
       await loadFolders();
       setSelectedFolder(data);
       await loadFolderDocs(data.id);
@@ -176,7 +193,43 @@ export default function FoldersPanel({ profile, onNotice }) {
     }
   }
 
+  async function deleteFolder() {
+    const folder = deleteFolderTarget;
+    if (!folder || !canManage(folder)) return;
+    try {
+      const supabase = getSupabase();
+      const { error } = await supabase.from('folders').update({ status: 'deleted' }).eq('id', folder.id);
+      if (error) throw error;
+      await logFolderAction('moved folder to recycle bin', `${folder.name} moved to Folder Recycle Bin`);
+      setDeleteFolderTarget(null);
+      setOpenMenu(null);
+      if (selectedFolder?.id === folder.id) {
+        setSelectedFolder(null);
+        setFolderDocs([]);
+      }
+      await loadFolders();
+      onNotice?.(`Folder “${folder.name}” moved to Folder Recycle Bin. It will be permanently deleted after 15 days.`);
+    } catch (error) {
+      onNotice?.(error.message || 'Unable to delete folder.');
+    }
+  }
+
+  async function restoreFolder(folder) {
+    if (!canManage(folder)) return;
+    try {
+      const supabase = getSupabase();
+      const { error } = await supabase.from('folders').update({ status: 'active' }).eq('id', folder.id);
+      if (error) throw error;
+      await logFolderAction('restored folder', `Restored folder ${folder.name}`);
+      await loadFolders();
+      onNotice?.(`Folder “${folder.name}” restored.`);
+    } catch (error) {
+      onNotice?.(error.message || 'Unable to restore folder.');
+    }
+  }
+
   async function openFolder(folder) {
+    if (folder.status === 'deleted') return;
     setSelectedFolder(folder);
     setOpenMenu(null);
     await loadFolderDocs(folder.id);
@@ -364,6 +417,9 @@ export default function FoldersPanel({ profile, onNotice }) {
     return directory.filter((item) => !sharedIds.has(item.id) && item.id !== shareFolder?.owner_id);
   }, [directory, folderShareRows, shareFolder?.owner_id]);
 
+  const activeFolders = useMemo(() => folders.filter((folder) => folder.status !== 'deleted'), [folders]);
+  const deletedFolders = useMemo(() => folders.filter((folder) => folder.status === 'deleted'), [folders]);
+
   if (DATA_MODE !== 'supabase') {
     return <section className="folder-shell"><div className="folder-empty"><FolderOpen size={42} /><h3>Folders require Secure Cloud mode</h3><p>Connect Supabase to use private folders and team sharing.</p></div></section>;
   }
@@ -379,6 +435,7 @@ export default function FoldersPanel({ profile, onNotice }) {
         <div className="folder-toolbar-actions">
           {manageable && <button className="secondary-btn" onClick={() => { setRenameFolder(selectedFolder); setRenameName(selectedFolder.name); }}><Pencil size={16} /> Rename</button>}
           {manageable && <button className="secondary-btn" onClick={() => openShare(selectedFolder)}><Share2 size={16} /> Share</button>}
+          {manageable && <button className="folder-danger-btn" onClick={() => setDeleteFolderTarget(selectedFolder)}><Trash2 size={16} /> Delete</button>}
           {editable && <button className="primary-btn" onClick={() => openUpload(selectedFolder)}><UploadCloud size={17} /> Upload files</button>}
         </div>
       </div>
@@ -392,32 +449,36 @@ export default function FoldersPanel({ profile, onNotice }) {
 
       {uploadOpen && <FolderUploadModal folder={selectedFolder} files={uploadFiles} setFiles={setUploadFiles} form={form} setForm={setForm} role={profile.role} uploading={uploading} inputRef={fileInputRef} onClose={() => !uploading && setUploadOpen(false)} onSubmit={uploadToFolder} />}
       {renameFolder && <RenameModal folder={renameFolder} name={renameName} setName={setRenameName} onClose={() => setRenameFolder(null)} onSubmit={saveRename} />}
+      {deleteFolderTarget && <DeleteFolderModal folder={deleteFolderTarget} onClose={() => setDeleteFolderTarget(null)} onConfirm={deleteFolder} />}
       {shareFolder && <ShareModal folder={shareFolder} directory={directory} shareableDirectory={shareableDirectory} shares={folderShareRows} userId={shareUserId} setUserId={setShareUserId} permission={sharePermission} setPermission={setSharePermission} saving={savingShare} onClose={() => setShareFolder(null)} onSubmit={saveShare} onRemove={removeShare} />}
       {preview && <FolderPreview preview={preview} onClose={() => setPreview(null)} onDownload={() => downloadDocument(preview.doc)} />}
     </section>;
   }
 
+  const displayedFolders = trashMode ? deletedFolders : activeFolders;
+
   return <section className="folder-shell">
     <div className="folder-toolbar folder-root-toolbar">
-      <div><p className="eyebrow">SECURE FOLDER WORKSPACE</p><h3>Folders</h3><p>Organize files, then share one folder to grant inherited access to everything inside.</p></div>
-      {profile?.role !== 'viewer' && <button className="primary-btn" onClick={() => setCreateOpen(true)}><FolderPlus size={17} /> New folder</button>}
+      <div><p className="eyebrow">{trashMode ? '15-DAY RECOVERY WINDOW' : 'SECURE FOLDER WORKSPACE'}</p><h3>{trashMode ? 'Folder Recycle Bin' : 'Folders'}</h3><p>{trashMode ? 'Deleted folders remain recoverable for 15 days before their files and database records are permanently removed.' : 'Organize files, then share one folder to grant inherited access to everything inside.'}</p></div>
+      <div className="folder-root-actions">
+        {profile?.role !== 'viewer' && <button className={`secondary-btn ${trashMode ? 'active' : ''}`} onClick={() => setTrashMode((current) => !current)}>{trashMode ? <FolderOpen size={17} /> : <Trash2 size={17} />} {trashMode ? 'Back to folders' : `Folder Recycle Bin${deletedFolders.length ? ` (${deletedFolders.length})` : ''}`}</button>}
+        {!trashMode && profile?.role !== 'viewer' && <button className="primary-btn" onClick={() => setCreateOpen(true)}><FolderPlus size={17} /> New folder</button>}
+      </div>
     </div>
 
-    {loading ? <div className="folder-empty"><div className="loader" /><p>Loading secure folders…</p></div> : !folders.length ? <div className="folder-empty"><FolderOpen size={48} /><h3>No folders yet</h3><p>{profile?.role === 'viewer' ? 'No folder has been shared with this account yet.' : 'Create a folder for a project, department, client, or document group.'}</p>{profile?.role !== 'viewer' && <button className="primary-btn" onClick={() => setCreateOpen(true)}><FolderPlus size={17} /> Create first folder</button>}</div> : <div className="folder-grid">{folders.map((folder) => {
+    {loading ? <div className="folder-empty"><div className="loader" /><p>Loading secure folders…</p></div> : !displayedFolders.length ? <div className="folder-empty">{trashMode ? <Trash2 size={48} /> : <FolderOpen size={48} />}<h3>{trashMode ? 'Folder Recycle Bin is empty' : 'No folders yet'}</h3><p>{trashMode ? 'Deleted folders will appear here for 15 days before permanent deletion.' : profile?.role === 'viewer' ? 'No folder has been shared with this account yet.' : 'Create a folder for a project, department, client, or document group.'}</p>{!trashMode && profile?.role !== 'viewer' && <button className="primary-btn" onClick={() => setCreateOpen(true)}><FolderPlus size={17} /> Create first folder</button>}</div> : <div className="folder-grid">{displayedFolders.map((folder) => {
       const access = accessFor(folder);
       const manageable = canManage(folder);
       const count = folderCount(folder.id);
-      return <article className="folder-card" key={folder.id}>
-        <button className="folder-card-open" onClick={() => openFolder(folder)}>
-          <div className="folder-card-icon"><FolderOpen size={28} /></div>
-          <div className="folder-card-copy"><strong>{folder.name}</strong><span>{count} file{count === 1 ? '' : 's'} • {bytes(folderSize(folder.id))}</span></div>
-        </button>
-        <div className="folder-card-bottom"><span className={`folder-access ${access}`}>{access === 'owner' ? 'Owner' : access === 'viewer' ? 'Shared • Viewer' : access === 'editor' ? 'Shared • Editor' : `${access} access`}</span>{manageable && <div className="folder-menu-wrap"><button className="folder-dots" onClick={() => setOpenMenu(openMenu === folder.id ? null : folder.id)} aria-label="Folder menu"><MoreVertical size={18} /></button>{openMenu === folder.id && <div className="folder-menu"><button onClick={() => { setRenameFolder(folder); setRenameName(folder.name); setOpenMenu(null); }}><Pencil size={15} /> Rename</button><button onClick={() => openShare(folder)}><Share2 size={15} /> Share folder</button></div>}</div>}</div>
+      return <article className={`folder-card ${trashMode ? 'folder-card-deleted' : ''}`} key={folder.id}>
+        {trashMode ? <div className="folder-card-open folder-card-static"><div className="folder-card-icon deleted"><Trash2 size={26} /></div><div className="folder-card-copy"><strong>{folder.name}</strong><span>{count} file{count === 1 ? '' : 's'} • {bytes(folderSize(folder.id))}</span><small className="folder-retention">{retentionSummary(folder.delete_after)}</small></div></div> : <button className="folder-card-open" onClick={() => openFolder(folder)}><div className="folder-card-icon"><FolderOpen size={28} /></div><div className="folder-card-copy"><strong>{folder.name}</strong><span>{count} file{count === 1 ? '' : 's'} • {bytes(folderSize(folder.id))}</span></div></button>}
+        <div className="folder-card-bottom">{trashMode ? <><span className="folder-access deleted">Deleted</span>{manageable && <button className="folder-restore-btn" onClick={() => restoreFolder(folder)}><RotateCcw size={15} /> Restore</button>}</> : <><span className={`folder-access ${access}`}>{access === 'owner' ? 'Owner' : access === 'viewer' ? 'Shared • Viewer' : access === 'editor' ? 'Shared • Editor' : `${access} access`}</span>{manageable && <div className="folder-menu-wrap"><button className="folder-dots" onClick={() => setOpenMenu(openMenu === folder.id ? null : folder.id)} aria-label="Folder menu"><MoreVertical size={18} /></button>{openMenu === folder.id && <div className="folder-menu"><button onClick={() => { setRenameFolder(folder); setRenameName(folder.name); setOpenMenu(null); }}><Pencil size={15} /> Rename</button><button onClick={() => openShare(folder)}><Share2 size={15} /> Share folder</button><button className="danger" onClick={() => { setDeleteFolderTarget(folder); setOpenMenu(null); }}><Trash2 size={15} /> Delete folder</button></div>}</div>}</>}</div>
       </article>;
     })}</div>}
 
     {createOpen && <CreateFolderModal name={createName} setName={setCreateName} onClose={() => { setCreateOpen(false); setCreateName(''); }} onSubmit={createFolder} />}
     {renameFolder && <RenameModal folder={renameFolder} name={renameName} setName={setRenameName} onClose={() => setRenameFolder(null)} onSubmit={saveRename} />}
+    {deleteFolderTarget && <DeleteFolderModal folder={deleteFolderTarget} onClose={() => setDeleteFolderTarget(null)} onConfirm={deleteFolder} />}
     {shareFolder && <ShareModal folder={shareFolder} directory={directory} shareableDirectory={shareableDirectory} shares={folderShareRows} userId={shareUserId} setUserId={setShareUserId} permission={sharePermission} setPermission={setSharePermission} saving={savingShare} onClose={() => setShareFolder(null)} onSubmit={saveShare} onRemove={removeShare} />}
   </section>;
 }
@@ -428,6 +489,10 @@ function CreateFolderModal({ name, setName, onClose, onSubmit }) {
 
 function RenameModal({ folder, name, setName, onClose, onSubmit }) {
   return <div className="modal-backdrop"><form className="folder-mini-modal" onSubmit={onSubmit}><div className="modal-head"><div><p className="eyebrow">FOLDER SETTINGS</p><h3>Rename folder</h3></div><button type="button" className="icon-btn" onClick={onClose}><X /></button></div><label className="folder-field">Folder name<input autoFocus maxLength={120} value={name} onChange={(e) => setName(e.target.value)} /></label><div className="modal-actions"><button type="button" className="secondary-btn" onClick={onClose}>Cancel</button><button className="primary-btn" disabled={!name.trim() || name.trim() === folder.name}><Pencil size={16} /> Save name</button></div></form></div>;
+}
+
+function DeleteFolderModal({ folder, onClose, onConfirm }) {
+  return <div className="modal-backdrop"><section className="folder-mini-modal folder-delete-modal"><div className="modal-head"><div><p className="eyebrow danger-text">FOLDER RECYCLE BIN</p><h3>Delete “{folder.name}”?</h3></div><button type="button" className="icon-btn" onClick={onClose}><X /></button></div><div className="folder-delete-copy"><div className="folder-delete-icon"><Trash2 size={24} /></div><div><strong>15-day recovery window</strong><p>The folder and all files inside will disappear from normal access immediately. You can restore it from Folder Recycle Bin for 15 days. After that, the files, docket rows, shares, and folder will be permanently deleted from Supabase.</p></div></div><div className="modal-actions"><button type="button" className="secondary-btn" onClick={onClose}>Cancel</button><button type="button" className="folder-danger-btn solid" onClick={onConfirm}><Trash2 size={16} /> Move to Recycle Bin</button></div></section></div>;
 }
 
 function ShareModal({ folder, directory, shareableDirectory, shares, userId, setUserId, permission, setPermission, saving, onClose, onSubmit, onRemove }) {
