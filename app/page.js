@@ -12,10 +12,12 @@ import {
   listDemoDocuments, patchDemoDocument, saveDemoDocument,
 } from '../lib/demo-db';
 import TeamMembersPanel from './components/team-members';
+import FoldersPanel from './components/folders';
 
 const navItems = [
   ['dashboard', 'Dashboard', LayoutDashboard],
   ['documents', 'All Documents', Files],
+  ['folders', 'Folders', FolderOpen],
   ['confidential', 'Confidential', LockKeyhole],
   ['archive', 'Archived', Archive],
   ['trash', 'Recycle Bin', Trash2],
@@ -25,12 +27,14 @@ const navItems = [
 const memberNavItems = [
   ['dashboard', 'Dashboard', LayoutDashboard],
   ['documents', 'My Documents', Files],
+  ['folders', 'Folders', FolderOpen],
   ['archive', 'Archived', Archive],
 ];
 
 const viewerNavItems = [
   ['dashboard', 'Dashboard', LayoutDashboard],
-  ['documents', 'All Documents', Files],
+  ['folders', 'Shared Folders', FolderOpen],
+  ['documents', 'Shared Documents', Files],
 ];
 
 const categories = ['Administrative', 'Contracts', 'Finance', 'HR', 'Legal', 'Operations', 'Reports', 'Others'];
@@ -210,8 +214,7 @@ export default function Home() {
         const { data: docs, error: docsError } = await supabase
           .from('dockets')
           .select('*')
-          .eq('status', 'active')
-          .eq('confidentiality', 'Internal')
+          .neq('status', 'deleted')
           .order('created_at', { ascending: false });
         if (docsError) throw docsError;
         setDocuments(docs || []);
@@ -224,7 +227,6 @@ export default function Home() {
           .from('dockets')
           .select('*')
           .eq('uploaded_by', profile.id)
-          .eq('confidentiality', 'Internal')
           .in('status', ['active', 'archived'])
           .order('created_at', { ascending: false });
         if (docsError) throw docsError;
@@ -397,10 +399,10 @@ export default function Home() {
   const visibleDocuments = useMemo(() => {
     let rows = documents;
     if (profile?.role === 'viewer') {
-      rows = rows.filter((d) => d.status === 'active' && d.confidentiality === 'Internal');
+      rows = rows.filter((d) => d.status !== 'deleted');
     }
     if (profile?.role === 'member') {
-      rows = rows.filter((d) => d.uploaded_by === profile.id && d.confidentiality === 'Internal' && ['active', 'archived'].includes(d.status));
+      rows = rows.filter((d) => d.uploaded_by === profile.id && ['active', 'archived'].includes(d.status));
     }
     if (view === 'documents' || view === 'dashboard') rows = rows.filter((d) => d.status === 'active');
     if (view === 'confidential') rows = rows.filter((d) => d.status === 'active' && ['Confidential', 'Restricted'].includes(d.confidentiality));
@@ -464,23 +466,23 @@ export default function Home() {
         <header className="topbar">
           <button className="icon-btn mobile-only" onClick={() => setSidebar(true)}><Menu /></button>
           <div><p className="eyebrow">SECURE DOCUMENT OPERATIONS</p><h2>{availableNavItems.find(([id]) => id === view)?.[1] || 'Dashboard'}</h2></div>
-          {canUploadDocuments && view !== 'team' && <div className="top-actions"><button className="primary-btn" onClick={() => setShowUpload(true)}><UploadCloud size={18} /> Upload documents</button></div>}
+          {canUploadDocuments && !['team', 'folders'].includes(view) && <div className="top-actions"><button className="primary-btn" onClick={() => setShowUpload(true)}><UploadCloud size={18} /> Upload documents</button></div>}
         </header>
 
         {DATA_MODE === 'demo' && <div className="demo-banner"><Database size={17} /><span><strong>Demo storage is active.</strong> Uploaded files are saved only in this browser. Connect the new Supabase project before production use.</span></div>}
         {notice && <button className="notice" onClick={() => setNotice('')}><CheckCircle2 size={17} />{notice}<X size={15} /></button>}
 
         {view === 'dashboard' && <>
-          <section className="hero-card"><div><p className="eyebrow">DOCUMENT CONTROL CENTER</p><h3>Every important file, secured and traceable.</h3><p>Use Rejima as the team’s digital backup when physical records are misplaced, damaged, or unavailable.</p></div>{canUploadDocuments ? <button className="hero-upload" onClick={() => setShowUpload(true)}><UploadCloud size={28} /><span>Drop & secure files</span><small>{profile?.role === 'member' ? 'Your private Internal documents only' : 'PDF, Word, Excel, images, ZIP and more'}</small></button> : <div className="hero-upload"><LockKeyhole size={28} /><span>View-only access</span><small>You can review and download approved internal documents.</small></div>}</section>
+          <section className="hero-card"><div><p className="eyebrow">DOCUMENT CONTROL CENTER</p><h3>Every important file, secured and traceable.</h3><p>Use Rejima as the team’s digital backup when physical records are misplaced, damaged, or unavailable.</p></div>{canUploadDocuments ? <button className="hero-upload" onClick={() => setShowUpload(true)}><UploadCloud size={28} /><span>Drop & secure files</span><small>{profile?.role === 'member' ? 'Your private files; shared work stays inside Folders' : 'PDF, Word, Excel, images, ZIP and more'}</small></button> : <div className="hero-upload"><LockKeyhole size={28} /><span>Shared access only</span><small>Open Shared Folders to review documents granted to this account.</small></div>}</section>
           <section className="stats-grid">
-            <article><div className="stat-icon"><Files /></div><div><span>{profile?.role === 'member' ? 'My active dockets' : 'Active dockets'}</span><strong>{stats.active}</strong></div></article>
+            <article><div className="stat-icon"><Files /></div><div><span>{profile?.role === 'member' ? 'My active dockets' : profile?.role === 'viewer' ? 'Shared active dockets' : 'Active dockets'}</span><strong>{stats.active}</strong></div></article>
             {['admin', 'manager'].includes(profile?.role) && <article><div className="stat-icon"><LockKeyhole /></div><div><span>Confidential</span><strong>{stats.confidential}</strong></div></article>}
             {profile?.role !== 'viewer' && <article><div className="stat-icon"><Archive /></div><div><span>Archived</span><strong>{stats.archived}</strong></div></article>}
-            <article><div className="stat-icon"><HardDrive /></div><div><span>{profile?.role === 'member' ? 'My storage' : 'Storage used'}</span><strong>{bytes(stats.storage)}</strong></div></article>
+            <article><div className="stat-icon"><HardDrive /></div><div><span>{profile?.role === 'member' ? 'My storage' : profile?.role === 'viewer' ? 'Shared storage' : 'Storage used'}</span><strong>{bytes(stats.storage)}</strong></div></article>
           </section>
         </>}
 
-        {view === 'activity' && canViewAudit ? <ActivityPanel activities={activities} /> : view === 'team' && profile?.role === 'admin' ? <TeamMembersPanel currentUserId={profile.id} /> : <section className="content-card">
+        {view === 'folders' ? <FoldersPanel profile={profile} onNotice={setNotice} /> : view === 'activity' && canViewAudit ? <ActivityPanel activities={activities} /> : view === 'team' && profile?.role === 'admin' ? <TeamMembersPanel currentUserId={profile.id} /> : <section className="content-card">
           <div className="content-head"><div><h3>{view === 'dashboard' ? 'Recent documents' : availableNavItems.find(([id]) => id === view)?.[1]}</h3><p>{view === 'trash' ? `${visibleDocuments.length} in recycle bin • Permanently deleted after 15 days` : `${visibleDocuments.length} record${visibleDocuments.length !== 1 ? 's' : ''}`}</p></div><div className="filters"><label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search docket, title, department…" /></label><select value={category} onChange={(e) => setCategory(e.target.value)}><option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></div></div>
           <DocumentTable rows={view === 'dashboard' ? visibleDocuments.slice(0, 6) : visibleDocuments} view={view} onPreview={previewDocument} onDownload={downloadDocument} onStatus={changeStatus} role={profile?.role} currentUserId={profile?.id} />
         </section>}
@@ -522,7 +524,7 @@ function PreviewModal({ preview, onClose, onDownload }) {
 }
 
 function ActivityPanel({ activities }) {
-  return <section className="content-card"><div className="content-head"><div><h3>Audit activity</h3><p>Recent document and account actions across the workspace</p></div></div>{!activities.length ? <div className="empty-state"><Activity size={40} /><h4>No activity yet</h4><p>Uploads, previews, downloads, archives, restores, and team changes will be recorded here.</p></div> : <div className="activity-list">{activities.map((item) => <article key={item.id}><div className="activity-icon"><Activity size={16} /></div><div><strong>{item.actor_name || 'Team member'} {item.action}</strong><span>{item.document_title || item.detail || 'Workspace activity'}</span></div><time>{formatDate(item.created_at)}</time></article>)}</div>}</section>;
+  return <section className="content-card"><div className="content-head"><div><h3>Audit activity</h3><p>Recent document and account actions across the workspace</p></div></div>{!activities.length ? <div className="empty-state"><Activity size={40} /><h4>No activity yet</h4><p>Uploads, previews, downloads, archives, restores, folder sharing, and team changes will be recorded here.</p></div> : <div className="activity-list">{activities.map((item) => <article key={item.id}><div className="activity-icon"><Activity size={16} /></div><div><strong>{item.actor_name || 'Team member'} {item.action}</strong><span>{item.document_title || item.detail || 'Workspace activity'}</span></div><time>{formatDate(item.created_at)}</time></article>)}</div>}</section>;
 }
 
 function UploadModal({ files, setFiles, form, setForm, uploading, dragging, setDragging, inputRef, acceptFiles, role, onClose, onSubmit }) {
