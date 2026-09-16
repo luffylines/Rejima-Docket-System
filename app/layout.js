@@ -2,6 +2,7 @@ import './globals.css';
 import './admin.css';
 import './preview.css';
 import './folders.css';
+import FolderUploadGuard from './components/folder-upload-guard';
 
 export const metadata = {
   title: 'Rejima Docket System',
@@ -11,7 +12,10 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <FolderUploadGuard />
+        {children}
+      </body>
     </html>
   );
 }
