@@ -57,6 +57,14 @@ function formatDate(value) {
   return new Intl.DateTimeFormat('en-PH', { month: 'short', day: '2-digit', year: 'numeric' }).format(new Date(value));
 }
 
+function retentionSummary(value) {
+  if (!value) return null;
+  const deadline = new Date(value);
+  if (Number.isNaN(deadline.getTime())) return null;
+  const days = Math.max(0, Math.ceil((deadline.getTime() - Date.now()) / 86400000));
+  return `${formatDate(value)} • ${days} day${days === 1 ? '' : 's'} left`;
+}
+
 function sanitize(name) {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
@@ -289,7 +297,11 @@ export default function Home() {
     }
     try {
       if (DATA_MODE === 'demo') {
-        const next = await patchDemoDocument(doc.id, { status });
+        const now = new Date();
+        const patch = status === 'archived'
+          ? { status, archived_at: now.toISOString(), delete_after: new Date(now.getTime() + 15 * 86400000).toISOString() }
+          : { status, archived_at: null, delete_after: null };
+        const next = await patchDemoDocument(doc.id, patch);
         await addDemoActivity(status === 'deleted' ? 'moved to recycle bin' : status === 'archived' ? 'archived' : 'restored', next, `${next.title} is now ${status}`);
       } else {
         const supabase = getSupabase();
@@ -408,7 +420,7 @@ export default function Home() {
         </>}
 
         {view === 'activity' && canViewAudit ? <ActivityPanel activities={activities} /> : view === 'team' && profile?.role === 'admin' ? <TeamMembersPanel currentUserId={profile.id} /> : <section className="content-card">
-          <div className="content-head"><div><h3>{view === 'dashboard' ? 'Recent documents' : availableNavItems.find(([id]) => id === view)?.[1]}</h3><p>{visibleDocuments.length} record{visibleDocuments.length !== 1 ? 's' : ''}</p></div><div className="filters"><label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search docket, title, department…" /></label><select value={category} onChange={(e) => setCategory(e.target.value)}><option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></div></div>
+          <div className="content-head"><div><h3>{view === 'dashboard' ? 'Recent documents' : availableNavItems.find(([id]) => id === view)?.[1]}</h3><p>{view === 'archive' ? `${visibleDocuments.length} archived • Auto-delete after 15 days` : `${visibleDocuments.length} record${visibleDocuments.length !== 1 ? 's' : ''}`}</p></div><div className="filters"><label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search docket, title, department…" /></label><select value={category} onChange={(e) => setCategory(e.target.value)}><option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></div></div>
           <DocumentTable rows={view === 'dashboard' ? visibleDocuments.slice(0, 6) : visibleDocuments} view={view} onDownload={downloadDocument} onStatus={changeStatus} role={profile?.role} currentUserId={profile?.id} />
         </section>}
       </section>
@@ -425,7 +437,8 @@ function DocumentTable({ rows, view, onDownload, onStatus, role, currentUserId }
     const Icon = fileIcon(doc.file_name);
     const canManageAll = ['admin', 'manager'].includes(role);
     const canManageOwn = role === 'member' && doc.uploaded_by === currentUserId;
-    return <tr key={doc.id}><td><div className="doc-cell"><div className="file-icon"><Icon size={20} /></div><div><strong>{doc.title}</strong><span>{doc.docket_number} • {bytes(doc.file_size)}</span></div></div></td><td><span className="category-chip">{doc.category}</span><small>{doc.department}</small></td><td><span className={`security-chip ${doc.confidentiality?.toLowerCase()}`}>{doc.confidentiality}</span></td><td><span>{formatDate(doc.created_at)}</span><small>{doc.uploaded_by_name || 'Team member'}</small></td><td><span className={`status-chip ${doc.status}`}>{doc.status}</span></td><td><div className="row-actions"><button title="Download" onClick={() => onDownload(doc)}><Download size={17} /></button>{canManageAll && (view === 'archive' || view === 'trash' ? <button title="Restore" onClick={() => onStatus(doc, 'active')}>↺</button> : <><button title="Archive" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button><button title="Recycle" onClick={() => onStatus(doc, 'deleted')}><Trash2 size={17} /></button></>)}{canManageOwn && (view === 'archive' ? <button title="Restore your document" onClick={() => onStatus(doc, 'active')}>↺</button> : <button title="Archive your document" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button>)}</div></td></tr>;
+    const retention = doc.status === 'archived' ? retentionSummary(doc.delete_after) : null;
+    return <tr key={doc.id}><td><div className="doc-cell"><div className="file-icon"><Icon size={20} /></div><div><strong>{doc.title}</strong><span>{doc.docket_number} • {bytes(doc.file_size)}</span></div></div></td><td><span className="category-chip">{doc.category}</span><small>{doc.department}</small></td><td><span className={`security-chip ${doc.confidentiality?.toLowerCase()}`}>{doc.confidentiality}</span></td><td><span>{formatDate(doc.created_at)}</span><small>{doc.uploaded_by_name || 'Team member'}</small></td><td><span className={`status-chip ${doc.status}`}>{doc.status}</span>{retention && <small>Auto-delete {retention}</small>}</td><td><div className="row-actions"><button title="Download" onClick={() => onDownload(doc)}><Download size={17} /></button>{canManageAll && (view === 'archive' || view === 'trash' ? <button title="Restore" onClick={() => onStatus(doc, 'active')}>↺</button> : <><button title="Archive" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button><button title="Recycle" onClick={() => onStatus(doc, 'deleted')}><Trash2 size={17} /></button></>)}{canManageOwn && (view === 'archive' ? <button title="Restore your document" onClick={() => onStatus(doc, 'active')}>↺</button> : <button title="Archive your document" onClick={() => onStatus(doc, 'archived')}><Archive size={17} /></button>)}</div></td></tr>;
   })}</tbody></table></div>;
 }
 
