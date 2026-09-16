@@ -22,6 +22,11 @@ const navItems = [
   ['activity', 'Activity Logs', Activity],
 ];
 
+const viewerNavItems = [
+  ['dashboard', 'Dashboard', LayoutDashboard],
+  ['documents', 'All Documents', Files],
+];
+
 const categories = ['Administrative', 'Contracts', 'Finance', 'HR', 'Legal', 'Operations', 'Reports', 'Others'];
 const departments = ['Administration', 'Finance', 'Human Resources', 'Legal', 'Management', 'Operations', 'Others'];
 
@@ -73,7 +78,9 @@ export default function Home() {
 
   const availableNavItems = profile?.role === 'admin'
     ? [...navItems, ['team', 'Team Members', Users]]
-    : navItems;
+    : profile?.role === 'viewer'
+      ? viewerNavItems
+      : navItems;
   const canManageDocuments = profile?.role !== 'viewer';
 
   useEffect(() => {
@@ -108,7 +115,13 @@ export default function Home() {
 
   useEffect(() => {
     if (signedIn && profile?.status === 'active') refresh();
-  }, [signedIn, profile?.status]);
+  }, [signedIn, profile?.status, profile?.role]);
+
+  useEffect(() => {
+    if (profile?.role === 'viewer' && !['dashboard', 'documents'].includes(view)) {
+      setView('dashboard');
+    }
+  }, [profile?.role, view]);
 
   async function loadSupabaseProfile(userId) {
     const supabase = getSupabase();
@@ -146,11 +159,29 @@ export default function Home() {
   async function refresh() {
     try {
       if (DATA_MODE === 'demo') {
-        setDocuments(await listDemoDocuments());
-        setActivities(await listDemoActivity());
+        const demoDocs = await listDemoDocuments();
+        setDocuments(profile?.role === 'viewer'
+          ? demoDocs.filter((doc) => doc.status === 'active' && doc.confidentiality === 'Internal')
+          : demoDocs);
+        setActivities(profile?.role === 'viewer' ? [] : await listDemoActivity());
         return;
       }
+
       const supabase = getSupabase();
+
+      if (profile?.role === 'viewer') {
+        const { data: docs, error: docsError } = await supabase
+          .from('dockets')
+          .select('*')
+          .eq('status', 'active')
+          .eq('confidentiality', 'Internal')
+          .order('created_at', { ascending: false });
+        if (docsError) throw docsError;
+        setDocuments(docs || []);
+        setActivities([]);
+        return;
+      }
+
       const [{ data: docs, error: docsError }, { data: logs, error: logsError }] = await Promise.all([
         supabase.from('dockets').select('*').order('created_at', { ascending: false }),
         supabase.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(100),
@@ -253,6 +284,9 @@ export default function Home() {
 
   const visibleDocuments = useMemo(() => {
     let rows = documents;
+    if (profile?.role === 'viewer') {
+      rows = rows.filter((d) => d.status === 'active' && d.confidentiality === 'Internal');
+    }
     if (view === 'documents' || view === 'dashboard') rows = rows.filter((d) => d.status === 'active');
     if (view === 'confidential') rows = rows.filter((d) => d.status === 'active' && ['Confidential', 'Restricted'].includes(d.confidentiality));
     if (view === 'archive') rows = rows.filter((d) => d.status === 'archived');
@@ -261,7 +295,7 @@ export default function Home() {
     const q = query.trim().toLowerCase();
     if (q) rows = rows.filter((d) => `${d.docket_number} ${d.title} ${d.category} ${d.department}`.toLowerCase().includes(q));
     return rows;
-  }, [documents, view, category, query]);
+  }, [documents, view, category, query, profile?.role]);
 
   const stats = useMemo(() => ({
     active: documents.filter((d) => d.status === 'active').length,
@@ -322,16 +356,16 @@ export default function Home() {
         {notice && <button className="notice" onClick={() => setNotice('')}><CheckCircle2 size={17} />{notice}<X size={15} /></button>}
 
         {view === 'dashboard' && <>
-          <section className="hero-card"><div><p className="eyebrow">DOCUMENT CONTROL CENTER</p><h3>Every important file, secured and traceable.</h3><p>Use Rejima as the team’s digital backup when physical records are misplaced, damaged, or unavailable.</p></div>{canManageDocuments ? <button className="hero-upload" onClick={() => setShowUpload(true)}><UploadCloud size={28} /><span>Drop & secure files</span><small>PDF, Word, Excel, images, ZIP and more</small></button> : <div className="hero-upload"><LockKeyhole size={28} /><span>View-only access</span><small>You can review and download secured documents.</small></div>}</section>
+          <section className="hero-card"><div><p className="eyebrow">DOCUMENT CONTROL CENTER</p><h3>Every important file, secured and traceable.</h3><p>Use Rejima as the team’s digital backup when physical records are misplaced, damaged, or unavailable.</p></div>{canManageDocuments ? <button className="hero-upload" onClick={() => setShowUpload(true)}><UploadCloud size={28} /><span>Drop & secure files</span><small>PDF, Word, Excel, images, ZIP and more</small></button> : <div className="hero-upload"><LockKeyhole size={28} /><span>View-only access</span><small>You can review and download approved internal documents.</small></div>}</section>
           <section className="stats-grid">
             <article><div className="stat-icon"><Files /></div><div><span>Active dockets</span><strong>{stats.active}</strong></div></article>
-            <article><div className="stat-icon"><LockKeyhole /></div><div><span>Confidential</span><strong>{stats.confidential}</strong></div></article>
-            <article><div className="stat-icon"><Archive /></div><div><span>Archived</span><strong>{stats.archived}</strong></div></article>
+            {profile?.role !== 'viewer' && <article><div className="stat-icon"><LockKeyhole /></div><div><span>Confidential</span><strong>{stats.confidential}</strong></div></article>}
+            {profile?.role !== 'viewer' && <article><div className="stat-icon"><Archive /></div><div><span>Archived</span><strong>{stats.archived}</strong></div></article>}
             <article><div className="stat-icon"><HardDrive /></div><div><span>Storage used</span><strong>{bytes(stats.storage)}</strong></div></article>
           </section>
         </>}
 
-        {view === 'activity' ? <ActivityPanel activities={activities} /> : view === 'team' && profile?.role === 'admin' ? <TeamMembersPanel currentUserId={profile.id} /> : <section className="content-card">
+        {view === 'activity' && profile?.role !== 'viewer' ? <ActivityPanel activities={activities} /> : view === 'team' && profile?.role === 'admin' ? <TeamMembersPanel currentUserId={profile.id} /> : <section className="content-card">
           <div className="content-head"><div><h3>{view === 'dashboard' ? 'Recent documents' : availableNavItems.find(([id]) => id === view)?.[1]}</h3><p>{visibleDocuments.length} record{visibleDocuments.length !== 1 ? 's' : ''}</p></div><div className="filters"><label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search docket, title, department…" /></label><select value={category} onChange={(e) => setCategory(e.target.value)}><option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></div></div>
           <DocumentTable rows={view === 'dashboard' ? visibleDocuments.slice(0, 6) : visibleDocuments} view={view} onDownload={downloadDocument} onStatus={changeStatus} canManage={canManageDocuments} />
         </section>}
