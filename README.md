@@ -1,24 +1,58 @@
 # Rejima Docket System
 
-Secure internal document storage, docket tracking, and backup-ready workspace for teams.
+Secure internal document storage, docket tracking, recovery, and team access control.
 
-## Current mode
+## Production features
 
-The app ships with a fully functional **Demo Mode** that stores uploaded files in the browser using IndexedDB. This lets the team test drag-and-drop uploads, docket numbers, search/filtering, archive, restore, download, and audit activity before a Supabase project is connected.
-
-## Planned production backend
-
-Supabase is prepared as the production backend for:
-
-- Email/password authentication
-- Private Storage bucket for documents
+- Supabase email/password authentication
+- Private `docket-files` Storage bucket
 - Row Level Security (RLS)
-- Team membership and roles
-- Docket metadata
-- Audit logs
-- Soft delete / recycle bin
+- Automatic docket numbers
+- Drag-and-drop multi-file upload
+- Search and filtering
+- Confidential / Restricted classifications
+- Archive and recycle-bin restore
+- Audit activity
+- Roles: Admin, Manager, Member, Viewer
+- Admin-only Team Members screen
+- Create accounts from Rejima
+- Change user roles
+- Disable and reactivate accounts
 
-See `supabase/schema.sql` and `.env.example`.
+## Environment variables
+
+```env
+NEXT_PUBLIC_DATA_MODE=supabase
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_SECRET_KEY=sb_secret_...
+```
+
+`SUPABASE_SECRET_KEY` is **server only**. Never prefix it with `NEXT_PUBLIC_`, never expose it in browser code, and never commit the real value to GitHub.
+
+The app also accepts the legacy `SUPABASE_SERVICE_ROLE_KEY` server environment variable as a fallback.
+
+## Supabase setup
+
+1. Create the Rejima Supabase project.
+2. Run `supabase/schema.sql` in Supabase SQL Editor.
+3. Create the first Auth user.
+4. Promote that first user once:
+
+```sql
+update public.profiles
+set role = 'admin', status = 'active'
+where id = 'YOUR-FIRST-USER-UUID';
+```
+
+5. Add the environment variables to Vercel.
+6. Redeploy.
+
+## Admin account management
+
+After signing in as an active admin, open **Team Members** from the sidebar. Admins can create an account with a full name, email, password, and role. Account creation uses a server-only Next.js route and Supabase Admin Auth; the secret key is never sent to the browser.
+
+Disabling a profile immediately blocks access through the Rejima UI and the RLS policies because document and storage access require `profiles.status = 'active'`.
 
 ## Run locally
 
@@ -28,13 +62,3 @@ npm run dev
 ```
 
 Then open `http://localhost:3000`.
-
-## Production setup later
-
-1. Create a new Supabase project for Rejima.
-2. Run `supabase/schema.sql` in the SQL editor.
-3. Copy `.env.example` to `.env.local` and add your Supabase URL and publishable key.
-4. Set `NEXT_PUBLIC_DATA_MODE=supabase` once the Supabase integration is enabled.
-5. Deploy to Vercel.
-
-> Never commit service-role or secret keys. Only use the Supabase publishable key in browser code.
