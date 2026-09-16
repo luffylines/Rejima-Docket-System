@@ -62,3 +62,5 @@ npm run dev
 ```
 
 Then open `http://localhost:3000`.
+
+_Last deployment trigger: Git repository connected to Vercel production._
