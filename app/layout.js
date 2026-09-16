@@ -1,4 +1,5 @@
 import './globals.css';
+import './admin.css';
 
 export const metadata = {
   title: 'Rejima Docket System',
