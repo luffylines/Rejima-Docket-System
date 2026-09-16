@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
-      "path": "/api/maintenance/purge-archived",
+      "path": "/api/maintenance/purge-recycle",
       "schedule": "0 0 * * *"
     }
   ]
